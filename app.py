@@ -3,6 +3,7 @@ from flask import Flask
 import requests
 import json
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -118,6 +119,13 @@ def get_games():
             home_team = teams["home"]["team"]["name"]
             away_team = teams["away"]["team"]["name"]
 
+            # 🕒 Zeit + Status
+            game_time = game["gameDate"]
+            status = game["status"]["detailedState"]
+
+            dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+            time_str = dt.strftime("%H:%M")
+
             box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
 
             players_list = []
@@ -153,15 +161,17 @@ def get_games():
                             "prob": round(prob * 100, 1)
                         })
 
-            players_list = sorted(players_list, key=lambda x: x["prob"], reverse=True)[:5]
+            players_list = sorted(players_list, key=lambda x: x["prob"], reverse=True)[:3]
 
             games.append({
                 "match": f"{away_team} vs {home_team}",
                 "players": players_list,
-                "has_lineup": has_lineup
+                "has_lineup": has_lineup,
+                "time": time_str,
+                "status": status
             })
 
-    return games
+    return sorted(games, key=lambda x: x["time"])
 
 def get_best_game(games):
     best = None
@@ -171,8 +181,7 @@ def get_best_game(games):
         if not g["players"]:
             continue
 
-        top_prob = g["players"][0]["prob"]
-        score = top_prob + len(g["players"]) * 2
+        score = g["players"][0]["prob"] + len(g["players"]) * 2
 
         if score > best_score:
             best_score = score
@@ -189,11 +198,7 @@ def home():
     games = get_games()
     best_game = get_best_game(games)
 
-    all_players = []
-    for g in games:
-        for p in g["players"]:
-            all_players.append(p)
-
+    all_players = [p for g in games for p in g["players"]]
     all_players = sorted(all_players, key=lambda x: x["prob"], reverse=True)
 
     adj = model_adjustment()
@@ -218,19 +223,43 @@ def home():
     <html>
     <body style="background:#0f172a;color:white;font-family:sans-serif">
 
-    <h2>🔥 ONLY BET MODE</h2>
+    <h2>🔥 LIVE MLB APP</h2>
     <p>Trefferquote: {accuracy}%</p>
     """
 
     if best_game:
-        html += f"<p>🏆 BEST GAME: {best_game['match']}</p>"
+        html += f"<h3>🏆 BEST GAME: {best_game['match']}</h3>"
 
     if not locks:
         html += "<h3>❌ NO BET TODAY</h3>"
     else:
+        html += "<h3>🔥 ONLY BET PICKS</h3>"
         for p in locks:
             win = round(p["winrate"] * 100, 1)
             html += f"<p>{p['name']} → {p['prob']}% | Winrate {win}%</p>"
+
+    html += "<hr><h3>⚾ ALL GAMES</h3>"
+
+    for g in games:
+
+        if "Live" in g["status"]:
+            status = "🔴 LIVE"
+        elif "Final" in g["status"]:
+            status = "⚫ Finished"
+        else:
+            status = "🟡 Upcoming"
+
+        html += f"<p><b>{g['match']}</b><br>{g['time']} | {status}<br>"
+
+        if not g["has_lineup"]:
+            html += "Waiting for lineups..."
+        elif not g["players"]:
+            html += "No good pick"
+        else:
+            for p in g["players"]:
+                html += f"{p['name']} → {p['prob']}%<br>"
+
+        html += "</p>"
 
     html += "</body></html>"
 
