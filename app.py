@@ -2,7 +2,7 @@ from flask import Flask
 import requests
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
@@ -95,15 +95,11 @@ def pro_confidence(prob, avg, lineup_pos):
 def is_lock(prob, conf):
     return prob >= 0.65 and conf >= 8
 
-def calculate_value(prob, odds):
-    implied = 1 / odds
-    value = prob - implied
-    return round(value * 100, 1)
-
 # -------- RESULTS --------
 
 def update_results():
     history = load_history()
+
     url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1"
     data = requests.get(url).json()
 
@@ -113,14 +109,17 @@ def update_results():
 
         for date in data.get("dates", []):
             for game in date.get("games", []):
+
                 try:
                     game_id = game["gamePk"]
+
                     box = requests.get(
                         f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore"
                     ).json()
 
                     for side in ["home", "away"]:
                         players = box.get("teams", {}).get(side, {}).get("players", {})
+
                         for p in players.values():
                             if p["person"]["fullName"] == h["name"]:
                                 hits = p.get("stats", {}).get("batting", {}).get("hits", 0)
@@ -139,59 +138,86 @@ def get_games():
     games = []
     adj = model_adjustment()
 
-    odds_data = {
-        "Aaron Judge": 1.80,
-        "Juan Soto": 1.75
-    }
-
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
             try:
-                dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
-
                 game_id = game["gamePk"]
-                teams = game["teams"]
 
-                home = teams["home"]["team"]["name"]
-                away = teams["away"]["team"]["name"]
+                home = game["teams"]["home"]["team"]["name"]
+                away = game["teams"]["away"]["team"]["name"]
 
                 status = game["status"]["detailedState"]
+
+                dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
                 time_str = dt.strftime("%H:%M")
 
-                box = requests.get(
-                    f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore"
+                # 🔥 LIVE API (LINEUPS + PITCHER)
+                live = requests.get(
+                    f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live",
+                    timeout=5
                 ).json()
 
-                teams_data = box.get("teams", {})
+                teams_live = live.get("liveData", {}).get("boxscore", {}).get("teams", {})
 
                 players_list = []
                 has_lineup = False
 
+                # 🔥 Pitcher
+                pitcher_name = "Unknown"
                 pitcher_era = 4.2
                 pitcher_whip = 1.25
 
-                for side in ["home", "away"]:
-                    team = teams_data.get(side, {}).get("players", {})
+                try:
+                    pitchers = teams_live["home"].get("pitchers", [])
+                    if pitchers:
+                        p = teams_live["home"]["players"][f"ID{pitchers[0]}"]
+                        pitcher_name = p["person"]["fullName"]
+                        pitcher_era = p.get("stats", {}).get("pitching", {}).get("era", 4.2)
+                        pitcher_whip = p.get("stats", {}).get("pitching", {}).get("whip", 1.25)
+                except:
+                    pass
 
-                    for p in team.values():
-                        avg = p.get("stats", {}).get("batting", {}).get("avg")
+                lineups = {"home": [], "away": []}
+
+                for side in ["home", "away"]:
+                    team_players = teams_live.get(side, {}).get("players", {})
+
+                    for p in team_players.values():
                         order = p.get("battingOrder")
+
+                        if order:
+                            has_lineup = True
+                            lineup_pos = int(order) // 100
+
+                            lineups[side].append({
+                                "name": p["person"]["fullName"],
+                                "pos": lineup_pos,
+                                "data": p
+                            })
+
+                    lineups[side] = sorted(lineups[side], key=lambda x: x["pos"])
+
+                for side in ["home", "away"]:
+                    for entry in lineups[side]:
+
+                        p = entry["data"]
+                        avg = p.get("stats", {}).get("batting", {}).get("avg")
 
                         if avg is None:
                             continue
 
-                        avg = float(avg)
+                        try:
+                            avg = float(avg)
+                        except:
+                            continue
 
-                        if order:
-                            has_lineup = True
-
-                        lineup_pos = int(order)//100 if order else 5
+                        lineup_pos = entry["pos"]
 
                         prob = pro_model(avg, lineup_pos, pitcher_era, pitcher_whip)
                         prob *= adj
 
-                        winrate = player_winrate(p["person"]["fullName"])
+                        winrate = player_winrate(entry["name"])
                         if winrate:
                             if winrate > 0.65:
                                 prob *= 1.05
@@ -202,16 +228,12 @@ def get_games():
 
                         conf = pro_confidence(prob, avg, lineup_pos)
 
-                        name = p["person"]["fullName"]
-                        odds = odds_data.get(name)
-                        value = calculate_value(prob, odds) if odds else None
-
                         if prob >= 0.55:
                             players_list.append({
-                                "name": name,
+                                "name": entry["name"],
                                 "prob": round(prob * 100, 1),
                                 "conf": conf,
-                                "value": value,
+                                "lineup": lineup_pos,
                                 "lock": is_lock(prob, conf)
                             })
 
@@ -222,7 +244,8 @@ def get_games():
                     "time": time_str,
                     "status": status,
                     "has_lineup": has_lineup,
-                    "players": players_list
+                    "players": players_list,
+                    "pitcher": pitcher_name
                 })
 
             except:
@@ -246,26 +269,48 @@ def home():
 
     html = f"""
     <html>
-    <body style="background:#0f172a;color:white;font-family:sans-serif">
-    <h2>🔥 MLB PRO TOOL</h2>
-    <p>📊 Trefferquote: {accuracy}%</p>
+    <head>
+    <style>
+    body {{ background:#0f172a;color:white;font-family:Arial;margin:0; }}
+    .header {{ padding:15px;background:#020617;text-align:center;font-size:22px;font-weight:bold; }}
+    .card {{ background:#1e293b;margin:10px;padding:12px;border-radius:12px; }}
+    .lock {{ background:#065f46; }}
+    .top {{ background:#1d4ed8; }}
+    .live {{ color:#22c55e; }}
+    .upcoming {{ color:#facc15; }}
+    .final {{ color:#94a3b8; }}
+    </style>
+    </head>
+    <body>
+
+    <div class="header">
+    🔥 MLB PRO TOOL<br>
+    Trefferquote: {accuracy}%
+    </div>
     """
 
     html += "<h3>🔒 LOCK PICKS</h3>"
-    if not locks:
-        html += "<p>No safe picks</p>"
-    else:
-        for p in locks:
-            html += f"<p>🔒 {p['name']} → {p['prob']}% (⭐ {p['conf']})</p>"
+    for p in locks:
+        html += f"<div class='card lock'>{p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
 
-    html += "<h3>🔥 TOP 5 PICKS</h3>"
+    html += "<h3>🔥 TOP PICKS</h3>"
     for p in top_players:
-        html += f"<p>{p['name']} → {p['prob']}% (⭐ {p['conf']})</p>"
+        html += f"<div class='card top'>{p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
 
-    html += "<hr><h3>⚾ ALL GAMES</h3>"
+    html += "<h3>⚾ GAMES</h3>"
 
     for g in games:
-        html += f"<p><b>{g['match']}</b><br>{g['time']} | {g['status']}<br>"
+
+        if "Live" in g["status"]:
+            status_class = "live"
+        elif "Final" in g["status"]:
+            status_class = "final"
+        else:
+            status_class = "upcoming"
+
+        html += f"<div class='card'><b>{g['match']}</b><br>"
+        html += f"<span class='{status_class}'>{g['time']} | {g['status']}</span><br>"
+        html += f"🎯 Pitcher: {g['pitcher']}<br>"
 
         if not g["has_lineup"]:
             html += "Waiting for lineups..."
@@ -273,10 +318,9 @@ def home():
             html += "No good pick"
         else:
             for p in g["players"]:
-                val = f" | VALUE +{p['value']}%" if p["value"] else ""
-                html += f"{p['name']} → {p['prob']}% (⭐ {p['conf']}){val}<br>"
+                html += f"{p['lineup']}. {p['name']} → {p['prob']}% ⭐ {p['conf']}<br>"
 
-        html += "</p>"
+        html += "</div>"
 
     html += "</body></html>"
     return html
