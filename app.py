@@ -51,7 +51,7 @@ def confidence(prob, avg, lineup):
 
 def adaptive_threshold(probs):
     if not probs:
-        return 0.50
+        return 0.48
     if len([p for p in probs if p >= 0.60]) >= 3:
         return 0.60
     if len([p for p in probs if p >= 0.55]) >= 3:
@@ -124,19 +124,14 @@ def get_games():
 
                 players_raw = []
                 probs = []
-                has_lineup = False
 
                 for side in ["home","away"]:
                     for p in teams_live.get(side, {}).get("players", {}).values():
 
                         order = p.get("battingOrder")
 
-                        # 🔥 FIX: fallback lineup
-                        if not order:
-                            lineup = 9
-                        else:
-                            has_lineup = True
-                            lineup = int(order)//100
+                        # FIX → fallback lineup
+                        lineup = int(order)//100 if order else 9
 
                         avg = p.get("stats",{}).get("batting",{}).get("avg")
                         if not avg:
@@ -178,13 +173,11 @@ def get_games():
                 # LEVEL 2
                 if len(players) < 2:
                     fallback_players = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
-
                     for p in fallback_players:
                         if p not in players:
                             p["fallback"] = True
                             p["lock"] = False
                             players.append(p)
-
                         if len(players) >= 3:
                             break
 
@@ -202,7 +195,6 @@ def get_games():
                     "time": time_str,
                     "status": status,
                     "players": players,
-                    "has_lineup": has_lineup,
                     "home_pitcher": home_pitcher,
                     "away_pitcher": away_pitcher,
                     "home_score": home_score,
@@ -291,8 +283,9 @@ def home():
         html += f"🏠 {g['home_pitcher']}<br>"
         html += f"✈️ {g['away_pitcher']}<br>"
 
-        if not g["has_lineup"]:
-            html += "Waiting for lineups..."
+        # 🔥 FINAL FIX → IMMER anzeigen
+        if not g["players"]:
+            html += "No good pick"
         else:
             for p in g["players"]:
 
