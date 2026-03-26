@@ -112,25 +112,37 @@ def player_winrate(name):
 # -------- DATA --------
 
 def get_games():
-    # 🔥 FIX: richtiger MLB Spieltag
-    us_today = (datetime.utcnow() - timedelta(hours=4)).strftime("%Y-%m-%d")
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_today}"
-
-    data = requests.get(url).json()
+    from datetime import datetime, timedelta
 
     games = []
     adj = model_adjustment()
 
-    dates = data.get("dates", [])
+    # 👉 HEUTE + MORGEN holen
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    tomorrow = (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    if not dates:
-        return []
+    all_games = []
 
-    date = dates[0]
+    for d in [today, tomorrow]:
+        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={d}"
+        data = requests.get(url).json()
 
-    for game in date.get("games", []):
+        for date in data.get("dates", []):
+            all_games.extend(date.get("games", []))
 
+    # 👉 nur Spiele in realistischer Range (Spieltag)
+    now = datetime.utcnow()
+
+    for game in all_games:
         try:
+            dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
+
+            # 👉 nur Spiele +/- 12h
+            diff = (dt - now).total_seconds()
+
+            if diff < -12 * 3600 or diff > 12 * 3600:
+                continue
+
             game_id = game["gamePk"]
             teams = game["teams"]
 
@@ -138,8 +150,6 @@ def get_games():
             away_team = teams["away"]["team"]["name"]
 
             status = game["status"]["detailedState"]
-
-            dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
             time_str = dt.strftime("%H:%M")
 
             box = requests.get(
@@ -199,23 +209,6 @@ def get_games():
             continue
 
     return sorted(games, key=lambda x: x["time"])
-
-def get_best_game(games):
-    best = None
-    best_score = 0
-
-    for g in games:
-        if not g["players"]:
-            continue
-
-        score = g["players"][0]["prob"] + len(g["players"]) * 2
-
-        if score > best_score:
-            best_score = score
-            best = g
-
-    return best
-
 # -------- WEB --------
 
 @app.route("/")
