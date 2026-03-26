@@ -5,6 +5,9 @@ import zoneinfo
 
 app = Flask(__name__)
 
+# -------- TIMEZONE (GLOBAL) --------
+local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
+
 # ---------------- MODEL ----------------
 
 def estimate_xba(avg):
@@ -53,8 +56,6 @@ def get_games():
 
     games = []
 
-    local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
-
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
@@ -64,6 +65,7 @@ def get_games():
                 home = game["teams"]["home"]["team"]["name"]
                 away = game["teams"]["away"]["team"]["name"]
 
+                # ✅ richtige lokale Zeit
                 dt = datetime.fromisoformat(game["gameDate"].replace("Z","+00:00"))
                 local_time = dt.astimezone(local_tz)
                 time_str = local_time.strftime("%H:%M")
@@ -88,7 +90,7 @@ def get_games():
                 half = linescore.get("inningHalf", "")
                 inning_text = f"{half} {inning}" if inning else ""
 
-                # -------- Pitcher --------
+                # -------- PITCHER --------
                 home_pitcher, away_pitcher = "?", "?"
                 home_era, away_era = 4.2, 4.2
                 home_hand, away_hand = "R", "R"
@@ -133,6 +135,7 @@ def get_games():
                         except:
                             continue
 
+                        # Gegner Pitcher berücksichtigen
                         if side == "home":
                             prob = pro_model(avg, lineup, away_era, 1.25, away_hand)
                         else:
@@ -173,7 +176,9 @@ def get_games():
 @app.route("/")
 def home():
     games = get_games()
-    now = datetime.now().strftime("%H:%M:%S")
+
+    # ✅ richtige deutsche Zeit
+    now = datetime.now(local_tz).strftime("%H:%M:%S")
 
     html = f"""
     <html>
