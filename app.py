@@ -1,4 +1,3 @@
-
 from flask import Flask
 import requests
 import json
@@ -110,8 +109,17 @@ def get_games():
     games = []
     adj = model_adjustment()
 
+    today = datetime.now().date()
+
     for date in data.get("dates", []):
         for game in date.get("games", []):
+
+            game_time = game["gameDate"]
+            dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+
+            # 👉 FILTER NUR HEUTE
+            if dt.date() != today:
+                continue
 
             game_id = game["gamePk"]
             teams = game["teams"]
@@ -119,11 +127,7 @@ def get_games():
             home_team = teams["home"]["team"]["name"]
             away_team = teams["away"]["team"]["name"]
 
-            # 🕒 Zeit + Status
-            game_time = game["gameDate"]
             status = game["status"]["detailedState"]
-
-            dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
             time_str = dt.strftime("%H:%M")
 
             box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
@@ -203,7 +207,6 @@ def home():
 
     adj = model_adjustment()
 
-    # ONLY BET MODE
     locks = []
     for p in all_players:
         winrate = player_winrate(p["name"])
@@ -218,12 +221,14 @@ def home():
                     })
 
     accuracy = calculate_accuracy()
+    today_str = datetime.now().strftime("%d.%m.%Y")
 
     html = f"""
     <html>
     <body style="background:#0f172a;color:white;font-family:sans-serif">
 
     <h2>🔥 LIVE MLB APP</h2>
+    <h3>📅 {today_str}</h3>
     <p>Trefferquote: {accuracy}%</p>
     """
 
