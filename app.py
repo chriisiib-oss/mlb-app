@@ -201,10 +201,135 @@ def home():
     accuracy = calculate_accuracy()
 
     html = f"""
-    <h1>🔥 TOP 5 SAFE PICKS</h1>
-    <p>Trefferquote: {accuracy}%</p>
-    <button onclick="location.reload()">Refresh</button>
-    """
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+body {{
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0f172a;
+    color: white;
+}}
+
+.header {{
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+    padding: 25px;
+    text-align: center;
+    font-size: 24px;
+    font-weight: bold;
+}}
+
+.sub {{
+    text-align: center;
+    margin-top: 5px;
+    color: #cbd5f5;
+}}
+
+.container {{
+    padding: 15px;
+}}
+
+.card {{
+    background: #1e293b;
+    border-radius: 18px;
+    padding: 18px;
+    margin-bottom: 15px;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+}}
+
+.name {{
+    font-size: 18px;
+    font-weight: 600;
+}}
+
+.prob {{
+    font-size: 28px;
+    font-weight: bold;
+    margin-top: 8px;
+}}
+
+.bar {{
+    height: 8px;
+    border-radius: 10px;
+    margin-top: 10px;
+    background: #334155;
+    overflow: hidden;
+}}
+
+.fill {{
+    height: 100%;
+    border-radius: 10px;
+}}
+
+.green {{ background: #22c55e; }}
+.yellow {{ background: #eab308; }}
+.orange {{ background: #f97316; }}
+.red {{ background: #ef4444; }}
+
+.conf {{
+    margin-top: 8px;
+    font-weight: bold;
+}}
+
+button {{
+    width: 90%;
+    margin: 20px auto;
+    display: block;
+    padding: 14px;
+    border-radius: 14px;
+    border: none;
+    background: #22c55e;
+    color: black;
+    font-size: 16px;
+    font-weight: bold;
+}}
+
+</style>
+</head>
+
+<body>
+
+<div class="header">🔥 MLB SAFE PICKS</div>
+<div class="sub">Trefferquote: {accuracy}%</div>
+
+<button onclick="location.reload()">Refresh</button>
+
+<div class="container">
+"""
+
+if not players:
+    html += "<p style='text-align:center;'>No strong picks today</p>"
+else:
+    for p in players:
+        prob = p["prob"]
+        conf = confidence(prob / 100)
+
+        if "ELITE" in conf:
+            color = "green"
+        elif "STRONG" in conf:
+            color = "yellow"
+        elif "SOLID" in conf:
+            color = "orange"
+        else:
+            color = "red"
+
+        html += f"""
+        <div class="card">
+            <div class="name">{p['name']}</div>
+            <div class="prob">{prob}%</div>
+
+            <div class="bar">
+                <div class="fill {color}" style="width:{prob}%"></div>
+            </div>
+
+            <div class="conf">{conf}</div>
+        </div>
+        """
+
+html += "</div></body></html>"
 
     if not players:
         html += "<p>No strong picks today</p>"
