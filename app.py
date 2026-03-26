@@ -23,10 +23,8 @@ def save_history(data):
 def calculate_accuracy():
     history = load_history()
     finished = [h for h in history if h["result"] is not None]
-
     if not finished:
         return 0
-
     wins = sum(1 for h in finished if h["result"] == 1)
     return round((wins / len(finished)) * 100, 1)
 
@@ -34,7 +32,6 @@ def calculate_accuracy():
 
 def update_results():
     history = load_history()
-
     url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1"
     data = requests.get(url).json()
 
@@ -69,29 +66,15 @@ def pitcher_factor(era, whip):
         factor += 0.12
     elif era < 3.5:
         factor -= 0.12
-
     if whip > 1.3:
         factor += 0.06
     elif whip < 1.1:
         factor -= 0.06
-
     return factor
-
-def split_adjustment(avg, pitcher_hand):
-    return avg * 1.05 if pitcher_hand == "L" else avg
 
 def hit_probability(avg, lineup_pos, era, whip):
     base = 1 - (1 - avg) ** estimate_ab(lineup_pos)
     return base * pitcher_factor(era, whip)
-
-def confidence(prob):
-    if prob >= 0.75:
-        return "ELITE"
-    elif prob >= 0.68:
-        return "STRONG"
-    elif prob >= 0.60:
-        return "SOLID"
-    return "RISKY"
 
 # -------- AUTO OPTIMIZATION --------
 
@@ -136,37 +119,12 @@ def get_games():
             away_team = teams["away"]["team"]["name"]
 
             box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
-            live = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/feed/live").json()
 
             players_list = []
-
-            try:
-                away_id = live["liveData"]["boxscore"]["teams"]["away"]["pitchers"][0]
-                home_id = live["liveData"]["boxscore"]["teams"]["home"]["pitchers"][0]
-
-                away = live["liveData"]["boxscore"]["teams"]["away"]["players"][f"ID{away_id}"]
-                home = live["liveData"]["boxscore"]["teams"]["home"]["players"][f"ID{home_id}"]
-
-                away_era = float(away["seasonStats"]["pitching"]["era"])
-                home_era = float(home["seasonStats"]["pitching"]["era"])
-
-                away_whip = float(away["seasonStats"]["pitching"].get("whip", 1.25))
-                home_whip = float(home["seasonStats"]["pitching"].get("whip", 1.25))
-
-                away_hand = away["person"]["pitchHand"]["code"]
-                home_hand = home["person"]["pitchHand"]["code"]
-
-            except:
-                away_era = home_era = 4.2
-                away_whip = home_whip = 1.25
-                away_hand = home_hand = "R"
+            has_lineup = False
 
             for side in ["home", "away"]:
                 team = box["teams"][side]["players"]
-
-                era = away_era if side == "home" else home_era
-                whip = away_whip if side == "home" else home_whip
-                hand = away_hand if side == "home" else home_hand
 
                 for p in team.values():
                     avg = p.get("stats", {}).get("batting", {}).get("avg")
@@ -175,13 +133,21 @@ def get_games():
                     if avg is None:
                         continue
 
-                    avg = split_adjustment(float(avg), hand)
+                    avg = float(avg)
+
+                    if order:
+                        has_lineup = True
+
                     lineup_pos = int(order)//100 if order else 5
 
-                    prob = hit_probability(avg, lineup_pos, era, whip) * adj
+                    if has_lineup:
+                        prob = hit_probability(avg, lineup_pos, 4.2, 1.25) * adj
+                    else:
+                        prob = avg * 3.5
+
                     prob = max(0.05, min(prob, 0.95))
 
-                    if prob >= 0.55:
+                    if (has_lineup and prob >= 0.60) or (not has_lineup and prob >= 0.50):
                         players_list.append({
                             "name": p["person"]["fullName"],
                             "prob": round(prob * 100, 1)
@@ -189,20 +155,39 @@ def get_games():
 
             players_list = sorted(players_list, key=lambda x: x["prob"], reverse=True)[:5]
 
-            if players_list:
-                games.append({
-                    "match": f"{away_team} vs {home_team}",
-                    "players": players_list
-                })
+            games.append({
+                "match": f"{away_team} vs {home_team}",
+                "players": players_list,
+                "has_lineup": has_lineup
+            })
 
     return games
+
+def get_best_game(games):
+    best = None
+    best_score = 0
+
+    for g in games:
+        if not g["players"]:
+            continue
+
+        top_prob = g["players"][0]["prob"]
+        score = top_prob + len(g["players"]) * 2
+
+        if score > best_score:
+            best_score = score
+            best = g
+
+    return best
 
 # -------- WEB --------
 
 @app.route("/")
 def home():
     update_results()
+
     games = get_games()
+    best_game = get_best_game(games)
 
     all_players = []
     for g in games:
@@ -211,62 +196,43 @@ def home():
 
     all_players = sorted(all_players, key=lambda x: x["prob"], reverse=True)
 
-    top_player = all_players[0] if all_players else None
+    adj = model_adjustment()
 
+    # ONLY BET MODE
     locks = []
     for p in all_players:
         winrate = player_winrate(p["name"])
 
         if p["prob"] >= 65:
-            if winrate is None or winrate >= 0.6:
-                locks.append({
-                    "name": p["name"],
-                    "prob": p["prob"],
-                    "winrate": winrate
-                })
+            if winrate is not None and winrate >= 0.6:
+                if 0.9 <= adj <= 1.1:
+                    locks.append({
+                        "name": p["name"],
+                        "prob": p["prob"],
+                        "winrate": winrate
+                    })
 
-    locks = locks[:5]
     accuracy = calculate_accuracy()
 
     html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {{background:#0f172a;color:white;font-family:-apple-system;margin:0}}
-.header {{background:linear-gradient(135deg,#22c55e,#16a34a);padding:20px;text-align:center;font-size:22px}}
-.lock {{background:#22c55e;color:black;margin:15px;padding:20px;border-radius:20px;text-align:center}}
-.container {{padding:15px}}
-.card {{background:#1e293b;padding:15px;margin-bottom:10px;border-radius:15px}}
-</style>
-</head>
+    <html>
+    <body style="background:#0f172a;color:white;font-family:sans-serif">
 
-<body>
+    <h2>🔥 ONLY BET MODE</h2>
+    <p>Trefferquote: {accuracy}%</p>
+    """
 
-<div class="header">🔥 WIN MODE</div>
+    if best_game:
+        html += f"<p>🏆 BEST GAME: {best_game['match']}</p>"
 
-<div class="lock">
-Trefferquote: {accuracy}%
-</div>
-"""
+    if not locks:
+        html += "<h3>❌ NO BET TODAY</h3>"
+    else:
+        for p in locks:
+            win = round(p["winrate"] * 100, 1)
+            html += f"<p>{p['name']} → {p['prob']}% | Winrate {win}%</p>"
 
-    if top_player:
-        html += f"<div class='lock'>🏆 {top_player['name']} → {top_player['prob']}%</div>"
-
-    html += "<div class='container'>"
-
-    for p in locks:
-        win = f"{round(p['winrate']*100,1)}%" if p["winrate"] else "New"
-
-        html += f"""
-        <div class="card">
-        {p['name']} → {p['prob']}%<br>
-        Winrate: {win}
-        </div>
-        """
-
-    html += "</div></body></html>"
+    html += "</body></html>"
 
     return html
 
