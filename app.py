@@ -25,6 +25,62 @@ def split_boost(avg, hand):
         return 1.05 if avg > 0.270 else 0.98
     return 1.03 if avg > 0.270 else 0.99
 
+def h2h_adjustment(batter_id, pitcher_id):
+    try:
+        url = f"https://statsapi.mlb.com/api/v1/people/{batter_id}/stats?stats=vsPlayer&opposingPlayerId={pitcher_id}"
+        data = requests.get(url, timeout=3).json()
+        splits = data.get("stats", [])[0].get("splits", [])
+
+        if splits:
+            stat = splits[0]["stat"]
+            avg = float(stat.get("avg", 0))
+            pa = stat.get("plateAppearances", 0)
+
+            if pa >= 5:
+                if avg >= 0.300:
+                    return 1.15
+                elif avg <= 0.180:
+                    return 0.85
+    except:
+        pass
+
+    return 1.0
+
+def get_last_season_avg(player_id):
+    try:
+        url = f"https://statsapi.mlb.com/api/v1/people/{player_id}/stats?stats=season&season=2025"
+        data = requests.get(url, timeout=3).json()
+        splits = data.get("stats", [])[0].get("splits", [])
+        if splits:
+            return float(splits[0]["stat"].get("avg", 0.240))
+    except:
+        pass
+    return 0.240
+
+def hybrid_avg(player_id, current_avg, games_played):
+    last_avg = get_last_season_avg(player_id)
+
+    try:
+        current_avg = float(current_avg)
+    except:
+        current_avg = None
+
+    if games_played < 5:
+        w_current = 0.2
+    elif games_played < 15:
+        w_current = 0.4
+    elif games_played < 30:
+        w_current = 0.6
+    else:
+        w_current = 0.75
+
+    w_last = 1 - w_current
+
+    if current_avg is None:
+        return last_avg
+
+    return (current_avg * w_current) + (last_avg * w_last)
+
 def pro_model(avg, lineup_pos, era, whip, hand):
     ab = 4 if lineup_pos <= 5 else 3
     base = 1 - (1 - avg) ** ab
@@ -46,8 +102,6 @@ def confidence(prob, avg, lineup):
     if lineup <= 3: score += 1
     if prob > 0.7: score += 1
     return round(score,1)
-
-# ---------------- ADAPTIVE ----------------
 
 def adaptive_threshold(probs):
     if not probs:
@@ -100,25 +154,16 @@ def get_games():
                 inning_text = f"{half} {inning}" if inning else ""
 
                 # Pitcher
-                home_pitcher, away_pitcher = "?", "?"
-                home_era, away_era = 4.2, 4.2
-                home_hand, away_hand = "R", "R"
+                home_pitcher_id = None
+                away_pitcher_id = None
 
                 try:
-                    hp = teams_live["home"]["pitchers"][0]
-                    p = teams_live["home"]["players"][f"ID{hp}"]
-                    home_pitcher = p["person"]["fullName"]
-                    home_hand = p.get("pitchHand", {}).get("code","R")
-                    home_era = float(p.get("stats",{}).get("pitching",{}).get("era",4.2))
+                    home_pitcher_id = teams_live["home"]["pitchers"][0]
                 except:
                     pass
 
                 try:
-                    ap = teams_live["away"]["pitchers"][0]
-                    p = teams_live["away"]["players"][f"ID{ap}"]
-                    away_pitcher = p["person"]["fullName"]
-                    away_hand = p.get("pitchHand", {}).get("code","R")
-                    away_era = float(p.get("stats",{}).get("pitching",{}).get("era",4.2))
+                    away_pitcher_id = teams_live["away"]["pitchers"][0]
                 except:
                     pass
 
@@ -128,24 +173,23 @@ def get_games():
                 for side in ["home","away"]:
                     for p in teams_live.get(side, {}).get("players", {}).values():
 
-                        order = p.get("battingOrder")
+                        lineup = int(p.get("battingOrder", "900")) // 100
 
-                        # FIX → fallback lineup
-                        lineup = int(order)//100 if order else 9
+                        player_id = p["person"]["id"]
 
-                        avg = p.get("stats",{}).get("batting",{}).get("avg")
-                        if not avg:
-                            continue
+                        current_avg = p.get("stats",{}).get("batting",{}).get("avg")
+                        games_played = p.get("stats",{}).get("batting",{}).get("gamesPlayed", 0)
 
-                        try:
-                            avg = float(avg)
-                        except:
-                            continue
+                        avg = hybrid_avg(player_id, current_avg, games_played)
 
                         if side == "home":
-                            prob = pro_model(avg, lineup, away_era, 1.25, away_hand)
+                            pitcher_id = away_pitcher_id
                         else:
-                            prob = pro_model(avg, lineup, home_era, 1.25, home_hand)
+                            pitcher_id = home_pitcher_id
+
+                        h2h = h2h_adjustment(player_id, pitcher_id) if pitcher_id else 1.0
+
+                        prob = pro_model(avg, lineup, 4.2, 1.25, "R") * h2h
 
                         conf = confidence(prob, avg, lineup)
 
@@ -154,7 +198,8 @@ def get_games():
                             "prob": round(prob*100,1),
                             "raw_prob": prob,
                             "conf": conf,
-                            "lineup": lineup
+                            "lineup": lineup,
+                            "h2h": h2h
                         })
 
                         probs.append(prob)
@@ -163,14 +208,12 @@ def get_games():
 
                 players = []
 
-                # LEVEL 1
                 for p in players_raw:
                     if p["raw_prob"] >= threshold:
                         p["fallback"] = p["raw_prob"] < 0.55
                         p["lock"] = p["raw_prob"] >= 0.65 and p["conf"] >= 8
                         players.append(p)
 
-                # LEVEL 2
                 if len(players) < 2:
                     fallback_players = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
                     for p in fallback_players:
@@ -181,7 +224,6 @@ def get_games():
                         if len(players) >= 3:
                             break
 
-                # LEVEL 3
                 if len(players) == 0 and players_raw:
                     players = sorted(players_raw, key=lambda x: x["conf"], reverse=True)[:3]
                     for p in players:
@@ -195,8 +237,6 @@ def get_games():
                     "time": time_str,
                     "status": status,
                     "players": players,
-                    "home_pitcher": home_pitcher,
-                    "away_pitcher": away_pitcher,
                     "home_score": home_score,
                     "away_score": away_score,
                     "inning": inning_text
@@ -221,87 +261,43 @@ def home():
     html = f"""
     <html>
     <head>
-    <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="30">
-
     <style>
     body {{ background:#0f172a;color:white;font-family:Arial;margin:0; }}
     .header {{ padding:15px;text-align:center;background:#020617; }}
     .card {{ background:#1e293b;margin:10px;padding:12px;border-radius:12px; }}
-
-    .elite {{ background:#065f46; }}
-    .solid {{ background:#78350f; }}
-    .risky {{ background:#7f1d1d; }}
-
-    .lock-card {{ background:#065f46;margin:10px;padding:12px;border-radius:12px; }}
     .top-card {{ background:#1d4ed8;margin:10px;padding:12px;border-radius:12px; }}
-
-    .live {{ color:#22c55e; }}
-    .upcoming {{ color:#facc15; }}
-    .final {{ color:#94a3b8; }}
+    .lock-card {{ background:#065f46;margin:10px;padding:12px;border-radius:12px; }}
     </style>
     </head>
-
     <body>
 
     <div class="header">
     🔥 MLB ELITE APP<br>
-    <small>Last update: {now}</small>
+    <small>{now}</small>
     </div>
     """
 
-    # LOCK PICKS
-    html += "<h3 style='padding:10px'>🔒 LOCK PICKS</h3>"
-    if not locks:
-        html += "<p style='padding:10px'>Keine sicheren Picks</p>"
-    else:
-        for p in locks:
-            html += f"<div class='lock-card'>🔒 {p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
+    html += "<h3>🔒 LOCK PICKS</h3>"
+    for p in locks:
+        html += f"<div class='lock-card'>{p['name']} {p['prob']}%</div>"
 
-    # TOP PICKS
-    html += "<h3 style='padding:10px'>🔥 TOP PICKS</h3>"
+    html += "<h3>🔥 TOP PICKS</h3>"
     for p in top_players:
-        html += f"<div class='top-card'>{p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
+        html += f"<div class='top-card'>{p['name']} {p['prob']}%</div>"
 
-    # GAMES
-    html += "<h3 style='padding:10px'>⚾ GAMES</h3>"
+    html += "<h3>⚾ GAMES</h3>"
 
     for g in games:
-
-        if "Live" in g["status"]:
-            status_class = "live"
-        elif "Final" in g["status"]:
-            status_class = "final"
-        else:
-            status_class = "upcoming"
-
         html += f"<div class='card'><b>{g['match']}</b><br>"
-        html += f"<span class='{status_class}'>{g['time']} | {g['status']}</span><br>"
-        html += f"⚾ {g['away_score']} : {g['home_score']}<br>"
-        html += f"⏱️ {g['inning']}<br>"
-        html += f"🏠 {g['home_pitcher']}<br>"
-        html += f"✈️ {g['away_pitcher']}<br>"
+        html += f"{g['time']} | {g['status']}<br>"
+        html += f"{g['away_score']} : {g['home_score']}<br>"
+        html += f"{g['inning']}<br>"
 
-        # 🔥 FINAL FIX → IMMER anzeigen
-        if not g["players"]:
-            html += "No good pick"
-        else:
-            for p in g["players"]:
-
-                if p["conf"] >= 9:
-                    cls = "elite"
-                elif p["conf"] >= 7:
-                    cls = "solid"
-                else:
-                    cls = "risky"
-
-                label = "⚠️ fallback" if p.get("fallback") else ""
-                lock = "🔒" if p.get("lock") else ""
-
-                html += f"<div class='{cls}' style='padding:6px;margin-top:6px;border-radius:8px;'>"
-                html += f"{lock} {p['lineup']}. {p['name']}<br>"
-                html += f"{p['prob']}% ⭐ {p['conf']} {label}</div>"
+        for p in g["players"]:
+            tag = "🔥" if p["h2h"] > 1.05 else ""
+            html += f"{p['lineup']}. {p['name']} {p['prob']}% {tag}<br>"
 
         html += "</div>"
 
