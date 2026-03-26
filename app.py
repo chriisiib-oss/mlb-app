@@ -112,50 +112,59 @@ def player_winrate(name):
 # -------- DATA --------
 
 def get_games():
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     games = []
     adj = model_adjustment()
 
-    # 👉 HEUTE + MORGEN holen
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    tomorrow = (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+
+    today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
     all_games = []
 
     for d in [today, tomorrow]:
-        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={d}"
-        data = requests.get(url).json()
+        try:
+            url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={d}"
+            data = requests.get(url, timeout=5).json()
 
-        for date in data.get("dates", []):
-            all_games.extend(date.get("games", []))
-
-    # 👉 nur Spiele in realistischer Range (Spieltag)
-    now = datetime.utcnow()
+            for date in data.get("dates", []):
+                all_games.extend(date.get("games", []))
+        except:
+            continue
 
     for game in all_games:
         try:
-            dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
+            game_time = game.get("gameDate")
+            if not game_time:
+                continue
 
-            # 👉 nur Spiele +/- 12h
+            dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+
             diff = (dt - now).total_seconds()
 
+            # 👉 24h Fenster
             if diff < -12 * 3600 or diff > 12 * 3600:
                 continue
 
-            game_id = game["gamePk"]
-            teams = game["teams"]
+            game_id = game.get("gamePk")
+            teams = game.get("teams", {})
 
-            home_team = teams["home"]["team"]["name"]
-            away_team = teams["away"]["team"]["name"]
+            home_team = teams.get("home", {}).get("team", {}).get("name", "Home")
+            away_team = teams.get("away", {}).get("team", {}).get("name", "Away")
 
-            status = game["status"]["detailedState"]
+            status = game.get("status", {}).get("detailedState", "Unknown")
             time_str = dt.strftime("%H:%M")
 
-            box = requests.get(
-                f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore",
-                timeout=5
-            ).json()
+            # 🔥 sichere API
+            try:
+                box = requests.get(
+                    f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore",
+                    timeout=5
+                ).json()
+            except:
+                box = {}
 
             teams_data = box.get("teams", {})
 
@@ -175,7 +184,10 @@ def get_games():
                     if avg is None:
                         continue
 
-                    avg = float(avg)
+                    try:
+                        avg = float(avg)
+                    except:
+                        continue
 
                     if order:
                         has_lineup = True
@@ -191,7 +203,7 @@ def get_games():
 
                     if (has_lineup and prob >= 0.60) or (not has_lineup and prob >= 0.50):
                         players_list.append({
-                            "name": p["person"]["fullName"],
+                            "name": p.get("person", {}).get("fullName", "Unknown"),
                             "prob": round(prob * 100, 1)
                         })
 
@@ -209,7 +221,6 @@ def get_games():
             continue
 
     return sorted(games, key=lambda x: x["time"])
-# -------- WEB --------
 
 @app.route("/")
 def home():
