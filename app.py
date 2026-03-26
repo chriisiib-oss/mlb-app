@@ -130,11 +130,13 @@ def get_games():
                     for p in teams_live.get(side, {}).get("players", {}).values():
 
                         order = p.get("battingOrder")
-                        if not order:
-                            continue
 
-                        has_lineup = True
-                        lineup = int(order)//100
+                        # 🔥 FIX: fallback lineup
+                        if not order:
+                            lineup = 9
+                        else:
+                            has_lineup = True
+                            lineup = int(order)//100
 
                         avg = p.get("stats",{}).get("batting",{}).get("avg")
                         if not avg:
@@ -165,11 +167,33 @@ def get_games():
                 threshold = adaptive_threshold(probs)
 
                 players = []
+
+                # LEVEL 1
                 for p in players_raw:
                     if p["raw_prob"] >= threshold:
                         p["fallback"] = p["raw_prob"] < 0.55
                         p["lock"] = p["raw_prob"] >= 0.65 and p["conf"] >= 8
                         players.append(p)
+
+                # LEVEL 2
+                if len(players) < 2:
+                    fallback_players = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
+
+                    for p in fallback_players:
+                        if p not in players:
+                            p["fallback"] = True
+                            p["lock"] = False
+                            players.append(p)
+
+                        if len(players) >= 3:
+                            break
+
+                # LEVEL 3
+                if len(players) == 0 and players_raw:
+                    players = sorted(players_raw, key=lambda x: x["conf"], reverse=True)[:3]
+                    for p in players:
+                        p["fallback"] = True
+                        p["lock"] = False
 
                 players = sorted(players, key=lambda x: x["conf"], reverse=True)[:3]
 
@@ -237,8 +261,11 @@ def home():
 
     # LOCK PICKS
     html += "<h3 style='padding:10px'>🔒 LOCK PICKS</h3>"
-    for p in locks:
-        html += f"<div class='lock-card'>🔒 {p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
+    if not locks:
+        html += "<p style='padding:10px'>Keine sicheren Picks</p>"
+    else:
+        for p in locks:
+            html += f"<div class='lock-card'>🔒 {p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
 
     # TOP PICKS
     html += "<h3 style='padding:10px'>🔥 TOP PICKS</h3>"
@@ -266,8 +293,6 @@ def home():
 
         if not g["has_lineup"]:
             html += "Waiting for lineups..."
-        elif not g["players"]:
-            html += "No good pick"
         else:
             for p in g["players"]:
 
@@ -278,7 +303,7 @@ def home():
                 else:
                     cls = "risky"
 
-                label = "⚠️" if p.get("fallback") else ""
+                label = "⚠️ fallback" if p.get("fallback") else ""
                 lock = "🔒" if p.get("lock") else ""
 
                 html += f"<div class='{cls}' style='padding:6px;margin-top:6px;border-radius:8px;'>"
