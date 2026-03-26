@@ -2,7 +2,7 @@ from flask import Flask
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -32,7 +32,10 @@ def calculate_accuracy():
 
 def update_results():
     history = load_history()
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1"
+
+    us_today = (datetime.utcnow() - timedelta(hours=4)).strftime("%Y-%m-%d")
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_today}"
+
     data = requests.get(url).json()
 
     for h in history:
@@ -109,7 +112,10 @@ def player_winrate(name):
 # -------- DATA --------
 
 def get_games():
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1"
+    # 🔥 FIX: richtiger MLB Spieltag
+    us_today = (datetime.utcnow() - timedelta(hours=4)).strftime("%Y-%m-%d")
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_today}"
+
     data = requests.get(url).json()
 
     games = []
@@ -120,7 +126,6 @@ def get_games():
     if not dates:
         return []
 
-    # 🔥 NUR EIN SPIELTAG
     date = dates[0]
 
     for game in date.get("games", []):
