@@ -1,7 +1,7 @@
 from flask import Flask
 import requests
-import os
 from datetime import datetime
+import zoneinfo
 
 app = Flask(__name__)
 
@@ -53,6 +53,8 @@ def get_games():
 
     games = []
 
+    local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
+
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
@@ -63,10 +65,12 @@ def get_games():
                 away = game["teams"]["away"]["team"]["name"]
 
                 dt = datetime.fromisoformat(game["gameDate"].replace("Z","+00:00"))
-                time_str = dt.strftime("%H:%M")
+                local_time = dt.astimezone(local_tz)
+                time_str = local_time.strftime("%H:%M")
 
                 status = game["status"]["detailedState"]
 
+                # LIVE DATA
                 live = requests.get(
                     f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live",
                     timeout=5
@@ -74,7 +78,17 @@ def get_games():
 
                 teams_live = live.get("liveData", {}).get("boxscore", {}).get("teams", {})
 
-                # Pitcher
+                # -------- SCORE --------
+                linescore = live.get("liveData", {}).get("linescore", {})
+
+                home_score = linescore.get("teams", {}).get("home", {}).get("runs", 0)
+                away_score = linescore.get("teams", {}).get("away", {}).get("runs", 0)
+
+                inning = linescore.get("currentInning", "")
+                half = linescore.get("inningHalf", "")
+                inning_text = f"{half} {inning}" if inning else ""
+
+                # -------- Pitcher --------
                 home_pitcher, away_pitcher = "?", "?"
                 home_era, away_era = 4.2, 4.2
                 home_hand, away_hand = "R", "R"
@@ -143,7 +157,10 @@ def get_games():
                     "players": players,
                     "has_lineup": has_lineup,
                     "home_pitcher": home_pitcher,
-                    "away_pitcher": away_pitcher
+                    "away_pitcher": away_pitcher,
+                    "home_score": home_score,
+                    "away_score": away_score,
+                    "inning": inning_text
                 })
 
             except:
@@ -161,47 +178,24 @@ def home():
     html = f"""
     <html>
     <head>
-
-    <!-- iPhone App Mode -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <!-- Auto Refresh -->
     <meta http-equiv="refresh" content="30">
 
     <style>
-    body {{
-        background:#0f172a;
-        color:white;
-        font-family:Arial;
-        margin:0;
-    }}
-
-    .header {{
-        padding:15px;
-        text-align:center;
-        font-size:20px;
-        background:#020617;
-    }}
-
-    .card {{
-        background:#1e293b;
-        margin:10px;
-        padding:12px;
-        border-radius:12px;
-    }}
-
+    body {{ background:#0f172a;color:white;font-family:Arial;margin:0; }}
+    .header {{ padding:15px;text-align:center;background:#020617; }}
+    .card {{ background:#1e293b;margin:10px;padding:12px;border-radius:12px; }}
     .live {{ color:#22c55e; }}
     .upcoming {{ color:#facc15; }}
     .final {{ color:#94a3b8; }}
-
     </style>
     </head>
 
     <body>
 
     <div class="header">
-    🔥 MLB PICKS<br>
+    🔥 MLB LIVE APP<br>
     <small>Last update: {now}</small>
     </div>
     """
@@ -219,6 +213,9 @@ def home():
         <div class="card">
         <b>{g['match']}</b><br>
         <span class="{status_class}">{g['time']} | {g['status']}</span><br>
+
+        ⚾ {g['away_score']} : {g['home_score']}<br>
+        ⏱️ {g['inning']}<br>
 
         🏠 {g['home_pitcher']}<br>
         ✈️ {g['away_pitcher']}<br>
