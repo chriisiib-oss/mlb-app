@@ -1,34 +1,9 @@
 from flask import Flask
 import requests
-import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 
 app = Flask(__name__)
-
-history_file = "history.json"
-
-# ---------------- HISTORY ----------------
-
-def load_history():
-    if not os.path.exists(history_file):
-        return []
-    with open(history_file, "r") as f:
-        return json.load(f)
-
-def save_history(data):
-    with open(history_file, "w") as f:
-        json.dump(data, f)
-
-def calculate_accuracy():
-    history = load_history()
-    finished = [h for h in history if h["result"] is not None]
-
-    if not finished:
-        return 0
-
-    wins = sum(1 for h in finished if h["result"] == 1)
-    return round((wins / len(finished)) * 100, 1)
 
 # ---------------- MODEL ----------------
 
@@ -93,15 +68,15 @@ def get_games():
                 status = game["status"]["detailedState"]
 
                 live = requests.get(
-                    f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live"
+                    f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live",
+                    timeout=5
                 ).json()
 
                 teams_live = live.get("liveData", {}).get("boxscore", {}).get("teams", {})
 
-                # -------- Pitcher --------
+                # Pitcher
                 home_pitcher, away_pitcher = "?", "?"
                 home_era, away_era = 4.2, 4.2
-                home_whip, away_whip = 1.25, 1.25
                 home_hand, away_hand = "R", "R"
 
                 try:
@@ -110,7 +85,8 @@ def get_games():
                     home_pitcher = p["person"]["fullName"]
                     home_hand = p.get("pitchHand", {}).get("code","R")
                     home_era = float(p.get("stats",{}).get("pitching",{}).get("era",4.2))
-                except: pass
+                except:
+                    pass
 
                 try:
                     ap = teams_live["away"]["pitchers"][0]
@@ -118,7 +94,8 @@ def get_games():
                     away_pitcher = p["person"]["fullName"]
                     away_hand = p.get("pitchHand", {}).get("code","R")
                     away_era = float(p.get("stats",{}).get("pitching",{}).get("era",4.2))
-                except: pass
+                except:
+                    pass
 
                 players = []
                 has_lineup = False
@@ -127,24 +104,25 @@ def get_games():
                     for p in teams_live.get(side, {}).get("players", {}).values():
 
                         order = p.get("battingOrder")
-                        if not order: continue
+                        if not order:
+                            continue
 
                         has_lineup = True
                         lineup = int(order)//100
 
                         avg = p.get("stats",{}).get("batting",{}).get("avg")
-                        if not avg: continue
+                        if not avg:
+                            continue
 
                         try:
                             avg = float(avg)
                         except:
                             continue
 
-                        # 👉 Gegner Pitcher
                         if side == "home":
-                            prob = pro_model(avg, lineup, away_era, away_whip, away_hand)
+                            prob = pro_model(avg, lineup, away_era, 1.25, away_hand)
                         else:
-                            prob = pro_model(avg, lineup, home_era, home_whip, home_hand)
+                            prob = pro_model(avg, lineup, home_era, 1.25, home_hand)
 
                         conf = confidence(prob, avg, lineup)
 
@@ -178,21 +156,73 @@ def get_games():
 @app.route("/")
 def home():
     games = get_games()
-    accuracy = calculate_accuracy()
+    now = datetime.now().strftime("%H:%M:%S")
 
     html = f"""
     <html>
-    <body style="background:#0f172a;color:white;font-family:Arial">
+    <head>
 
-    <h2>🔥 MLB ELITE TOOL</h2>
-    <p>Trefferquote: {accuracy}%</p>
+    <!-- iPhone App Mode -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- Auto Refresh -->
+    <meta http-equiv="refresh" content="30">
+
+    <style>
+    body {{
+        background:#0f172a;
+        color:white;
+        font-family:Arial;
+        margin:0;
+    }}
+
+    .header {{
+        padding:15px;
+        text-align:center;
+        font-size:20px;
+        background:#020617;
+    }}
+
+    .card {{
+        background:#1e293b;
+        margin:10px;
+        padding:12px;
+        border-radius:12px;
+    }}
+
+    .live {{ color:#22c55e; }}
+    .upcoming {{ color:#facc15; }}
+    .final {{ color:#94a3b8; }}
+
+    </style>
+    </head>
+
+    <body>
+
+    <div class="header">
+    🔥 MLB PICKS<br>
+    <small>Last update: {now}</small>
+    </div>
     """
 
     for g in games:
-        html += f"<hr><b>{g['match']}</b><br>"
-        html += f"{g['time']} | {g['status']}<br>"
-        html += f"🏠 {g['home_pitcher']}<br>"
-        html += f"✈️ {g['away_pitcher']}<br>"
+
+        if "Live" in g["status"]:
+            status_class = "live"
+        elif "Final" in g["status"]:
+            status_class = "final"
+        else:
+            status_class = "upcoming"
+
+        html += f"""
+        <div class="card">
+        <b>{g['match']}</b><br>
+        <span class="{status_class}">{g['time']} | {g['status']}</span><br>
+
+        🏠 {g['home_pitcher']}<br>
+        ✈️ {g['away_pitcher']}<br>
+        """
 
         if not g["has_lineup"]:
             html += "Waiting for lineups..."
@@ -201,6 +231,8 @@ def home():
         else:
             for p in g["players"]:
                 html += f"{p['lineup']}. {p['name']} → {p['prob']}% ⭐ {p['conf']}<br>"
+
+        html += "</div>"
 
     html += "</body></html>"
     return html
