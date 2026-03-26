@@ -2,7 +2,7 @@ from flask import Flask
 import requests
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -115,21 +115,11 @@ def get_games():
     games = []
     adj = model_adjustment()
 
-    now = datetime.now(timezone.utc)
-
+    # 🔥 KEIN FILTER MEHR → API entscheidet Spieltag
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
             try:
-                dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
-
-                # 🔥 FINAL FIX (richtiger MLB-Spieltag)
-                start = now - timedelta(hours=6)
-                end = now + timedelta(hours=18)
-
-                if not (start <= dt <= end):
-                    continue
-
                 game_id = game["gamePk"]
                 teams = game["teams"]
 
@@ -137,6 +127,8 @@ def get_games():
                 away_team = teams["away"]["team"]["name"]
 
                 status = game["status"]["detailedState"]
+
+                dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
                 time_str = dt.strftime("%H:%M")
 
                 box = requests.get(
@@ -195,6 +187,7 @@ def get_games():
             except:
                 continue
 
+    # 🔥 sortiert wie echte App
     return sorted(games, key=lambda x: x["time"])
 
 def get_best_game(games):
@@ -241,14 +234,12 @@ def home():
                     })
 
     accuracy = calculate_accuracy()
-    today_str = datetime.now().strftime("%d.%m.%Y")
 
     html = f"""
     <html>
     <body style="background:#0f172a;color:white;font-family:sans-serif">
 
     <h2>🔥 LIVE MLB APP</h2>
-    <h3>📅 {today_str}</h3>
     <p>Trefferquote: {accuracy}%</p>
     """
 
@@ -270,7 +261,7 @@ def home():
         if "Live" in g["status"]:
             status = "🔴 LIVE"
         elif "Final" in g["status"]:
-            status = "⚫ Finished"
+            status = "⚫ Final"
         else:
             status = "🟡 Upcoming"
 
