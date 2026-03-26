@@ -2,7 +2,7 @@ from flask import Flask
 import requests
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -42,16 +42,22 @@ def update_results():
         for date in data.get("dates", []):
             for game in date.get("games", []):
 
-                game_id = game["gamePk"]
-                box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
+                try:
+                    game_id = game["gamePk"]
+                    box = requests.get(
+                        f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore",
+                        timeout=5
+                    ).json()
 
-                for side in ["home", "away"]:
-                    players = box["teams"][side]["players"]
+                    for side in ["home", "away"]:
+                        players = box.get("teams", {}).get(side, {}).get("players", {})
 
-                    for p in players.values():
-                        if p["person"]["fullName"] == h["name"]:
-                            hits = p.get("stats", {}).get("batting", {}).get("hits", 0)
-                            h["result"] = 1 if hits > 0 else 0
+                        for p in players.values():
+                            if p["person"]["fullName"] == h["name"]:
+                                hits = p.get("stats", {}).get("batting", {}).get("hits", 0)
+                                h["result"] = 1 if hits > 0 else 0
+                except:
+                    continue
 
     save_history(history)
 
@@ -109,19 +115,16 @@ def get_games():
     games = []
     adj = model_adjustment()
 
-    now = datetime.now(timezone.utc)  # 🔥 FIX
+    today = datetime.now().strftime("%Y-%m-%d")
 
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
             try:
-                game_time = game["gameDate"]
-                dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+                game_date_api = game["gameDate"][:10]
 
-                diff = (dt - now).total_seconds()
-
-                # 🔥 TIME WINDOW
-                if diff < -3600 or diff > 60 * 60 * 12:
+                # 🔥 RICHTIGER MLB SPIELTAG FILTER
+                if game_date_api != today:
                     continue
 
                 game_id = game["gamePk"]
@@ -131,15 +134,25 @@ def get_games():
                 away_team = teams["away"]["team"]["name"]
 
                 status = game["status"]["detailedState"]
+
+                dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
                 time_str = dt.strftime("%H:%M")
 
-                box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
+                box = requests.get(
+                    f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore",
+                    timeout=5
+                ).json()
+
+                teams_data = box.get("teams", {})
 
                 players_list = []
                 has_lineup = False
 
                 for side in ["home", "away"]:
-                    team = box["teams"][side]["players"]
+                    team = teams_data.get(side, {}).get("players", {})
+
+                    if not team:
+                        continue
 
                     for p in team.values():
                         avg = p.get("stats", {}).get("batting", {}).get("avg")
@@ -179,7 +192,7 @@ def get_games():
                 })
 
             except:
-                continue  # 🔥 verhindert Crash komplett
+                continue
 
     return sorted(games, key=lambda x: x["time"])
 
