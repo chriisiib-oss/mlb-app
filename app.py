@@ -2,7 +2,7 @@ from flask import Flask
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
 
@@ -115,16 +115,19 @@ def get_games():
     games = []
     adj = model_adjustment()
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
 
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
             try:
-                game_date_api = game["gameDate"][:10]
+                dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
 
-                # 🔥 RICHTIGER MLB SPIELTAG FILTER
-                if game_date_api != today:
+                # 🔥 FINAL FIX (richtiger MLB-Spieltag)
+                start = now - timedelta(hours=6)
+                end = now + timedelta(hours=18)
+
+                if not (start <= dt <= end):
                     continue
 
                 game_id = game["gamePk"]
@@ -134,8 +137,6 @@ def get_games():
                 away_team = teams["away"]["team"]["name"]
 
                 status = game["status"]["detailedState"]
-
-                dt = datetime.fromisoformat(game["gameDate"].replace("Z", "+00:00"))
                 time_str = dt.strftime("%H:%M")
 
                 box = requests.get(
