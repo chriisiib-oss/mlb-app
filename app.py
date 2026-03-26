@@ -1,7 +1,6 @@
 
 from flask import Flask
 import requests
-import math
 import json
 import os
 
@@ -47,23 +46,15 @@ def update_results():
             for game in date.get("games", []):
 
                 game_id = game["gamePk"]
-
                 box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
 
                 for side in ["home", "away"]:
                     players = box["teams"][side]["players"]
 
                     for p in players.values():
-                        name = p["person"]["fullName"]
-
-                        if name == h["name"]:
-                            batting = p.get("stats", {}).get("batting", {})
-                            hits = batting.get("hits", 0)
-
-                            if hits > 0:
-                                h["result"] = 1
-                            else:
-                                h["result"] = 0
+                        if p["person"]["fullName"] == h["name"]:
+                            hits = p.get("stats", {}).get("batting", {}).get("hits", 0)
+                            h["result"] = 1 if hits > 0 else 0
 
     save_history(history)
 
@@ -74,7 +65,6 @@ def estimate_ab(lineup_pos):
 
 def pitcher_factor(era, whip):
     factor = 1.0
-
     if era > 4.5:
         factor += 0.12
     elif era < 3.5:
@@ -88,24 +78,20 @@ def pitcher_factor(era, whip):
     return factor
 
 def split_adjustment(avg, pitcher_hand):
-    if pitcher_hand == "L":
-        return avg * 1.05
-    return avg
+    return avg * 1.05 if pitcher_hand == "L" else avg
 
 def hit_probability(avg, lineup_pos, era, whip):
-    ab = estimate_ab(lineup_pos)
-    base = 1 - (1 - avg) ** ab
+    base = 1 - (1 - avg) ** estimate_ab(lineup_pos)
     return base * pitcher_factor(era, whip)
 
 def confidence(prob):
     if prob >= 0.75:
-        return "ELITE 🟢"
+        return "ELITE"
     elif prob >= 0.68:
-        return "STRONG 🟡"
+        return "STRONG"
     elif prob >= 0.60:
-        return "SOLID 🟠"
-    else:
-        return "RISKY 🔴"
+        return "SOLID"
+    return "RISKY"
 
 # -------- DATA --------
 
@@ -124,20 +110,20 @@ def get_players():
             live = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/feed/live").json()
 
             try:
-                away_pitcher_id = live["liveData"]["boxscore"]["teams"]["away"]["pitchers"][0]
-                home_pitcher_id = live["liveData"]["boxscore"]["teams"]["home"]["pitchers"][0]
+                away_id = live["liveData"]["boxscore"]["teams"]["away"]["pitchers"][0]
+                home_id = live["liveData"]["boxscore"]["teams"]["home"]["pitchers"][0]
 
-                away_pitcher = live["liveData"]["boxscore"]["teams"]["away"]["players"][f"ID{away_pitcher_id}"]
-                home_pitcher = live["liveData"]["boxscore"]["teams"]["home"]["players"][f"ID{home_pitcher_id}"]
+                away = live["liveData"]["boxscore"]["teams"]["away"]["players"][f"ID{away_id}"]
+                home = live["liveData"]["boxscore"]["teams"]["home"]["players"][f"ID{home_id}"]
 
-                away_era = float(away_pitcher["seasonStats"]["pitching"]["era"])
-                home_era = float(home_pitcher["seasonStats"]["pitching"]["era"])
+                away_era = float(away["seasonStats"]["pitching"]["era"])
+                home_era = float(home["seasonStats"]["pitching"]["era"])
 
-                away_whip = float(away_pitcher["seasonStats"]["pitching"].get("whip", 1.25))
-                home_whip = float(home_pitcher["seasonStats"]["pitching"].get("whip", 1.25))
+                away_whip = float(away["seasonStats"]["pitching"].get("whip", 1.25))
+                home_whip = float(home["seasonStats"]["pitching"].get("whip", 1.25))
 
-                away_hand = away_pitcher["person"]["pitchHand"]["code"]
-                home_hand = home_pitcher["person"]["pitchHand"]["code"]
+                away_hand = away["person"]["pitchHand"]["code"]
+                home_hand = home["person"]["pitchHand"]["code"]
 
             except:
                 away_era = home_era = 4.2
@@ -147,26 +133,18 @@ def get_players():
             for side in ["home", "away"]:
                 team = box["teams"][side]["players"]
 
-                if side == "home":
-                    era = away_era
-                    whip = away_whip
-                    pitcher_hand = away_hand
-                else:
-                    era = home_era
-                    whip = home_whip
-                    pitcher_hand = home_hand
+                era = away_era if side == "home" else home_era
+                whip = away_whip if side == "home" else home_whip
+                hand = away_hand if side == "home" else home_hand
 
                 for p in team.values():
-                    batting = p.get("stats", {}).get("batting", {})
-                    avg = batting.get("avg")
+                    avg = p.get("stats", {}).get("batting", {}).get("avg")
                     order = p.get("battingOrder")
 
                     if avg is None:
                         continue
 
-                    avg = float(avg)
-                    avg = split_adjustment(avg, pitcher_hand)
-
+                    avg = split_adjustment(float(avg), hand)
                     lineup_pos = int(order)//100 if order else 5
 
                     prob = hit_probability(avg, lineup_pos, era, whip)
@@ -184,18 +162,11 @@ def get_players():
 @app.route("/")
 def home():
     update_results()
-
     players = get_players()
 
     history = load_history()
-
     for p in players:
-        history.append({
-            "name": p["name"],
-            "prob": p["prob"],
-            "result": None
-        })
-
+        history.append({"name": p["name"], "prob": p["prob"], "result": None})
     save_history(history)
 
     accuracy = calculate_accuracy()
@@ -205,148 +176,103 @@ def home():
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-
 <style>
 body {{
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    background: #0f172a;
-    color: white;
+    margin:0;
+    font-family:-apple-system;
+    background:#0f172a;
+    color:white;
 }}
 
 .header {{
-    background: linear-gradient(135deg, #22c55e, #16a34a);
-    padding: 25px;
-    text-align: center;
-    font-size: 24px;
-    font-weight: bold;
+    background:linear-gradient(135deg,#22c55e,#16a34a);
+    padding:25px;
+    text-align:center;
+    font-size:24px;
+    font-weight:bold;
 }}
 
-.sub {{
-    text-align: center;
-    margin-top: 5px;
-    color: #cbd5f5;
+.top {{
+    background:#1e293b;
+    margin:15px;
+    padding:20px;
+    border-radius:20px;
+    text-align:center;
 }}
 
 .container {{
-    padding: 15px;
+    padding:15px;
 }}
 
 .card {{
-    background: #1e293b;
-    border-radius: 18px;
-    padding: 18px;
-    margin-bottom: 15px;
-    box-shadow: 0 8px 20px rgba(0,0,0,0.3);
-}}
-
-.name {{
-    font-size: 18px;
-    font-weight: 600;
-}}
-
-.prob {{
-    font-size: 28px;
-    font-weight: bold;
-    margin-top: 8px;
+    background:#1e293b;
+    border-radius:18px;
+    padding:18px;
+    margin-bottom:15px;
 }}
 
 .bar {{
-    height: 8px;
-    border-radius: 10px;
-    margin-top: 10px;
-    background: #334155;
-    overflow: hidden;
+    height:8px;
+    background:#334155;
+    border-radius:10px;
+    overflow:hidden;
 }}
 
 .fill {{
-    height: 100%;
-    border-radius: 10px;
+    height:100%;
 }}
 
-.green {{ background: #22c55e; }}
-.yellow {{ background: #eab308; }}
-.orange {{ background: #f97316; }}
-.red {{ background: #ef4444; }}
-
-.conf {{
-    margin-top: 8px;
-    font-weight: bold;
-}}
+.green {{background:#22c55e}}
+.yellow {{background:#eab308}}
+.orange {{background:#f97316}}
+.red {{background:#ef4444}}
 
 button {{
-    width: 90%;
-    margin: 20px auto;
-    display: block;
-    padding: 14px;
-    border-radius: 14px;
-    border: none;
-    background: #22c55e;
-    color: black;
-    font-size: 16px;
-    font-weight: bold;
+    width:90%;
+    margin:20px auto;
+    display:block;
+    padding:14px;
+    border-radius:14px;
+    border:none;
+    background:#22c55e;
+    font-weight:bold;
 }}
-
 </style>
 </head>
 
 <body>
 
-<div class="header">🔥 MLB SAFE PICKS</div>
-<div class="sub">Trefferquote: {accuracy}%</div>
+<div class="header">🔥 MLB PICKS</div>
+
+<div class="top">
+Trefferquote: {accuracy}%
+</div>
 
 <button onclick="location.reload()">Refresh</button>
 
 <div class="container">
 """
 
-if not players:
-    html += "<p style='text-align:center;'>No strong picks today</p>"
-else:
-    for p in players:
+    for i, p in enumerate(players):
         prob = p["prob"]
-        conf = confidence(prob / 100)
+        conf = confidence(prob/100)
 
-        if "ELITE" in conf:
-            color = "green"
-        elif "STRONG" in conf:
-            color = "yellow"
-        elif "SOLID" in conf:
-            color = "orange"
-        else:
-            color = "red"
+        color = "green" if prob>75 else "yellow" if prob>68 else "orange" if prob>60 else "red"
 
         html += f"""
         <div class="card">
-            <div class="name">{p['name']}</div>
-            <div class="prob">{prob}%</div>
-
-            <div class="bar">
-                <div class="fill {color}" style="width:{prob}%"></div>
-            </div>
-
-            <div class="conf">{conf}</div>
+        <b>{p['name']}</b><br>
+        {prob}%<br>
+        <div class="bar"><div class="fill {color}" style="width:{prob}%"></div></div>
+        {conf}
         </div>
         """
 
-html += "</div></body></html>"
-
-    if not players:
-        html += "<p>No strong picks today</p>"
-    else:
-        for p in players:
-            conf = confidence(p["prob"] / 100)
-
-            html += f"""
-            <p>
-            {p['name']} → {p['prob']}%<br>
-            <b>{conf}</b>
-            </p>
-            """
+    html += "</div></body></html>"
 
     return html
 
-# -------- START --------jo
+# -------- START --------
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
