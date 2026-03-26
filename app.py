@@ -108,8 +108,7 @@ def get_games():
 
     games = []
     adj = model_adjustment()
-
-    today = datetime.now().date()
+    now = datetime.now()
 
     for date in data.get("dates", []):
         for game in date.get("games", []):
@@ -117,8 +116,9 @@ def get_games():
             game_time = game["gameDate"]
             dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
 
-            # 👉 FILTER NUR HEUTE
-            if dt.date() != today:
+            # 🔥 TIME WINDOW FIX (heute + nacht)
+            diff = (dt - now).total_seconds()
+            if diff < -3600 or diff > 60 * 60 * 12:
                 continue
 
             game_id = game["gamePk"]
