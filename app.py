@@ -197,41 +197,26 @@ def get_games():
 
 @app.route("/")
 def home():
-    games = get_games()
-    now = datetime.now(local_tz).strftime("%H:%M:%S")
+    try:
+        games = get_games()
+        now = datetime.now(local_tz).strftime("%H:%M:%S")
 
-    html = f"""
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="30">
-    <style>
-    body {{ background:#0f172a;color:white;font-family:Arial;margin:0; }}
-    .card {{ background:#1e293b;margin:10px;padding:12px;border-radius:12px; }}
-    .header {{ padding:15px;text-align:center;background:#020617; }}
-    </style>
-    </head>
-    <body>
+        html = f"""
+        <html><body style='background:black;color:white'>
+        <h2>MLB APP</h2>
+        <small>{now}</small>
+        """
 
-    <div class="header">
-    🔥 MLB APP<br>
-    {now}
-    </div>
-    """
+        for g in games:
+            html += f"<p>{g['match']}<br>"
 
-    for g in games:
-        html += f"<div class='card'><b>{g['match']}</b><br>"
-        html += f"{g['time']} | {g['status']}<br>"
-        html += f"{g['away_score']} : {g['home_score']}<br>"
+            for p in g["players"]:
+                html += f"{p['name']} {p['prob']}%<br>"
 
-        for p in g["players"]:
-            html += f"{p['lineup']}. {p['name']} {p['prob']}% ⭐{p['conf']}<br>"
+            html += "</p>"
 
-        html += "</div>"
+        html += "</body></html>"
+        return html
 
-    html += "</body></html>"
-    return html
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    except Exception as e:
+        return f"<h1 style='color:red'>ERROR</h1><pre>{str(e)}</pre>"
