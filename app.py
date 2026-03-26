@@ -93,21 +93,52 @@ def confidence(prob):
         return "SOLID"
     return "RISKY"
 
+# -------- AUTO OPTIMIZATION --------
+
+def model_adjustment():
+    history = load_history()
+    finished = [h for h in history if h["result"] is not None]
+
+    if len(finished) < 10:
+        return 1.0
+
+    avg_prob = sum(h["prob"] for h in finished) / len(finished) / 100
+    real = sum(h["result"] for h in finished) / len(finished)
+
+    return real / avg_prob if avg_prob > 0 else 1.0
+
+def player_winrate(name):
+    history = load_history()
+    data = [h for h in history if h["name"] == name and h["result"] is not None]
+
+    if len(data) < 3:
+        return None
+
+    wins = sum(1 for d in data if d["result"] == 1)
+    return wins / len(data)
+
 # -------- DATA --------
 
-def get_players():
+def get_games():
     url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1"
     data = requests.get(url).json()
 
-    players = []
+    games = []
+    adj = model_adjustment()
 
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
             game_id = game["gamePk"]
+            teams = game["teams"]
+
+            home_team = teams["home"]["team"]["name"]
+            away_team = teams["away"]["team"]["name"]
 
             box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
             live = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/feed/live").json()
+
+            players_list = []
 
             try:
                 away_id = live["liveData"]["boxscore"]["teams"]["away"]["pitchers"][0]
@@ -147,28 +178,54 @@ def get_players():
                     avg = split_adjustment(float(avg), hand)
                     lineup_pos = int(order)//100 if order else 5
 
-                    prob = hit_probability(avg, lineup_pos, era, whip)
+                    prob = hit_probability(avg, lineup_pos, era, whip) * adj
+                    prob = max(0.05, min(prob, 0.95))
 
-                    if prob >= 0.60 and lineup_pos <= 5:
-                        players.append({
+                    if prob >= 0.55:
+                        players_list.append({
                             "name": p["person"]["fullName"],
                             "prob": round(prob * 100, 1)
                         })
 
-    return sorted(players, key=lambda x: x["prob"], reverse=True)[:5]
+            players_list = sorted(players_list, key=lambda x: x["prob"], reverse=True)[:5]
+
+            if players_list:
+                games.append({
+                    "match": f"{away_team} vs {home_team}",
+                    "players": players_list
+                })
+
+    return games
 
 # -------- WEB --------
 
 @app.route("/")
 def home():
     update_results()
-    players = get_players()
+    games = get_games()
 
-    history = load_history()
-    for p in players:
-        history.append({"name": p["name"], "prob": p["prob"], "result": None})
-    save_history(history)
+    all_players = []
+    for g in games:
+        for p in g["players"]:
+            all_players.append(p)
 
+    all_players = sorted(all_players, key=lambda x: x["prob"], reverse=True)
+
+    top_player = all_players[0] if all_players else None
+
+    locks = []
+    for p in all_players:
+        winrate = player_winrate(p["name"])
+
+        if p["prob"] >= 65:
+            if winrate is None or winrate >= 0.6:
+                locks.append({
+                    "name": p["name"],
+                    "prob": p["prob"],
+                    "winrate": winrate
+                })
+
+    locks = locks[:5]
     accuracy = calculate_accuracy()
 
     html = f"""
@@ -177,94 +234,35 @@ def home():
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body {{
-    margin:0;
-    font-family:-apple-system;
-    background:#0f172a;
-    color:white;
-}}
-
-.header {{
-    background:linear-gradient(135deg,#22c55e,#16a34a);
-    padding:25px;
-    text-align:center;
-    font-size:24px;
-    font-weight:bold;
-}}
-
-.top {{
-    background:#1e293b;
-    margin:15px;
-    padding:20px;
-    border-radius:20px;
-    text-align:center;
-}}
-
-.container {{
-    padding:15px;
-}}
-
-.card {{
-    background:#1e293b;
-    border-radius:18px;
-    padding:18px;
-    margin-bottom:15px;
-}}
-
-.bar {{
-    height:8px;
-    background:#334155;
-    border-radius:10px;
-    overflow:hidden;
-}}
-
-.fill {{
-    height:100%;
-}}
-
-.green {{background:#22c55e}}
-.yellow {{background:#eab308}}
-.orange {{background:#f97316}}
-.red {{background:#ef4444}}
-
-button {{
-    width:90%;
-    margin:20px auto;
-    display:block;
-    padding:14px;
-    border-radius:14px;
-    border:none;
-    background:#22c55e;
-    font-weight:bold;
-}}
+body {{background:#0f172a;color:white;font-family:-apple-system;margin:0}}
+.header {{background:linear-gradient(135deg,#22c55e,#16a34a);padding:20px;text-align:center;font-size:22px}}
+.lock {{background:#22c55e;color:black;margin:15px;padding:20px;border-radius:20px;text-align:center}}
+.container {{padding:15px}}
+.card {{background:#1e293b;padding:15px;margin-bottom:10px;border-radius:15px}}
 </style>
 </head>
 
 <body>
 
-<div class="header">🔥 MLB PICKS</div>
+<div class="header">🔥 WIN MODE</div>
 
-<div class="top">
+<div class="lock">
 Trefferquote: {accuracy}%
 </div>
-
-<button onclick="location.reload()">Refresh</button>
-
-<div class="container">
 """
 
-    for i, p in enumerate(players):
-        prob = p["prob"]
-        conf = confidence(prob/100)
+    if top_player:
+        html += f"<div class='lock'>🏆 {top_player['name']} → {top_player['prob']}%</div>"
 
-        color = "green" if prob>75 else "yellow" if prob>68 else "orange" if prob>60 else "red"
+    html += "<div class='container'>"
+
+    for p in locks:
+        win = f"{round(p['winrate']*100,1)}%" if p["winrate"] else "New"
 
         html += f"""
         <div class="card">
-        <b>{p['name']}</b><br>
-        {prob}%<br>
-        <div class="bar"><div class="fill {color}" style="width:{prob}%"></div></div>
-        {conf}
+        {p['name']} → {p['prob']}%<br>
+        Winrate: {win}
         </div>
         """
 
