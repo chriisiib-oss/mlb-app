@@ -2,7 +2,7 @@ from flask import Flask
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
@@ -108,72 +108,78 @@ def get_games():
 
     games = []
     adj = model_adjustment()
-    now = datetime.now()
+
+    now = datetime.now(timezone.utc)  # 🔥 FIX
 
     for date in data.get("dates", []):
         for game in date.get("games", []):
 
-            game_time = game["gameDate"]
-            dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+            try:
+                game_time = game["gameDate"]
+                dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
 
-            # 🔥 TIME WINDOW FIX (heute + nacht)
-            diff = (dt - now).total_seconds()
-            if diff < -3600 or diff > 60 * 60 * 12:
-                continue
+                diff = (dt - now).total_seconds()
 
-            game_id = game["gamePk"]
-            teams = game["teams"]
+                # 🔥 TIME WINDOW
+                if diff < -3600 or diff > 60 * 60 * 12:
+                    continue
 
-            home_team = teams["home"]["team"]["name"]
-            away_team = teams["away"]["team"]["name"]
+                game_id = game["gamePk"]
+                teams = game["teams"]
 
-            status = game["status"]["detailedState"]
-            time_str = dt.strftime("%H:%M")
+                home_team = teams["home"]["team"]["name"]
+                away_team = teams["away"]["team"]["name"]
 
-            box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
+                status = game["status"]["detailedState"]
+                time_str = dt.strftime("%H:%M")
 
-            players_list = []
-            has_lineup = False
+                box = requests.get(f"https://statsapi.mlb.com/api/v1/game/{game_id}/boxscore").json()
 
-            for side in ["home", "away"]:
-                team = box["teams"][side]["players"]
+                players_list = []
+                has_lineup = False
 
-                for p in team.values():
-                    avg = p.get("stats", {}).get("batting", {}).get("avg")
-                    order = p.get("battingOrder")
+                for side in ["home", "away"]:
+                    team = box["teams"][side]["players"]
 
-                    if avg is None:
-                        continue
+                    for p in team.values():
+                        avg = p.get("stats", {}).get("batting", {}).get("avg")
+                        order = p.get("battingOrder")
 
-                    avg = float(avg)
+                        if avg is None:
+                            continue
 
-                    if order:
-                        has_lineup = True
+                        avg = float(avg)
 
-                    lineup_pos = int(order)//100 if order else 5
+                        if order:
+                            has_lineup = True
 
-                    if has_lineup:
-                        prob = hit_probability(avg, lineup_pos, 4.2, 1.25) * adj
-                    else:
-                        prob = avg * 3.5
+                        lineup_pos = int(order)//100 if order else 5
 
-                    prob = max(0.05, min(prob, 0.95))
+                        if has_lineup:
+                            prob = hit_probability(avg, lineup_pos, 4.2, 1.25) * adj
+                        else:
+                            prob = avg * 3.5
 
-                    if (has_lineup and prob >= 0.60) or (not has_lineup and prob >= 0.50):
-                        players_list.append({
-                            "name": p["person"]["fullName"],
-                            "prob": round(prob * 100, 1)
-                        })
+                        prob = max(0.05, min(prob, 0.95))
 
-            players_list = sorted(players_list, key=lambda x: x["prob"], reverse=True)[:3]
+                        if (has_lineup and prob >= 0.60) or (not has_lineup and prob >= 0.50):
+                            players_list.append({
+                                "name": p["person"]["fullName"],
+                                "prob": round(prob * 100, 1)
+                            })
 
-            games.append({
-                "match": f"{away_team} vs {home_team}",
-                "players": players_list,
-                "has_lineup": has_lineup,
-                "time": time_str,
-                "status": status
-            })
+                players_list = sorted(players_list, key=lambda x: x["prob"], reverse=True)[:3]
+
+                games.append({
+                    "match": f"{away_team} vs {home_team}",
+                    "players": players_list,
+                    "has_lineup": has_lineup,
+                    "time": time_str,
+                    "status": status
+                })
+
+            except:
+                continue  # 🔥 verhindert Crash komplett
 
     return sorted(games, key=lambda x: x["time"])
 
