@@ -5,7 +5,6 @@ import zoneinfo
 
 app = Flask(__name__)
 
-# -------- TIMEZONE (GLOBAL) --------
 local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
 
 # ---------------- MODEL ----------------
@@ -48,6 +47,19 @@ def confidence(prob, avg, lineup):
     if prob > 0.7: score += 1
     return round(score,1)
 
+# ---------------- ADAPTIVE ----------------
+
+def adaptive_threshold(probs):
+    if not probs:
+        return 0.50
+    if len([p for p in probs if p >= 0.60]) >= 3:
+        return 0.60
+    if len([p for p in probs if p >= 0.55]) >= 3:
+        return 0.55
+    if len([p for p in probs if p >= 0.50]) >= 3:
+        return 0.50
+    return 0.48
+
 # ---------------- DATA ----------------
 
 def get_games():
@@ -65,14 +77,12 @@ def get_games():
                 home = game["teams"]["home"]["team"]["name"]
                 away = game["teams"]["away"]["team"]["name"]
 
-                # ✅ richtige lokale Zeit
                 dt = datetime.fromisoformat(game["gameDate"].replace("Z","+00:00"))
                 local_time = dt.astimezone(local_tz)
                 time_str = local_time.strftime("%H:%M")
 
                 status = game["status"]["detailedState"]
 
-                # LIVE DATA
                 live = requests.get(
                     f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live",
                     timeout=5
@@ -80,9 +90,8 @@ def get_games():
 
                 teams_live = live.get("liveData", {}).get("boxscore", {}).get("teams", {})
 
-                # -------- SCORE --------
+                # SCORE
                 linescore = live.get("liveData", {}).get("linescore", {})
-
                 home_score = linescore.get("teams", {}).get("home", {}).get("runs", 0)
                 away_score = linescore.get("teams", {}).get("away", {}).get("runs", 0)
 
@@ -90,7 +99,7 @@ def get_games():
                 half = linescore.get("inningHalf", "")
                 inning_text = f"{half} {inning}" if inning else ""
 
-                # -------- PITCHER --------
+                # Pitcher
                 home_pitcher, away_pitcher = "?", "?"
                 home_era, away_era = 4.2, 4.2
                 home_hand, away_hand = "R", "R"
@@ -113,7 +122,8 @@ def get_games():
                 except:
                     pass
 
-                players = []
+                players_raw = []
+                probs = []
                 has_lineup = False
 
                 for side in ["home","away"]:
@@ -135,7 +145,6 @@ def get_games():
                         except:
                             continue
 
-                        # Gegner Pitcher berücksichtigen
                         if side == "home":
                             prob = pro_model(avg, lineup, away_era, 1.25, away_hand)
                         else:
@@ -143,13 +152,24 @@ def get_games():
 
                         conf = confidence(prob, avg, lineup)
 
-                        if prob >= 0.55:
-                            players.append({
-                                "name": p["person"]["fullName"],
-                                "prob": round(prob*100,1),
-                                "conf": conf,
-                                "lineup": lineup
-                            })
+                        players_raw.append({
+                            "name": p["person"]["fullName"],
+                            "prob": round(prob*100,1),
+                            "raw_prob": prob,
+                            "conf": conf,
+                            "lineup": lineup
+                        })
+
+                        probs.append(prob)
+
+                threshold = adaptive_threshold(probs)
+
+                players = []
+                for p in players_raw:
+                    if p["raw_prob"] >= threshold:
+                        p["fallback"] = p["raw_prob"] < 0.55
+                        p["lock"] = p["raw_prob"] >= 0.65 and p["conf"] >= 8
+                        players.append(p)
 
                 players = sorted(players, key=lambda x: x["conf"], reverse=True)[:3]
 
@@ -176,9 +196,11 @@ def get_games():
 @app.route("/")
 def home():
     games = get_games()
-
-    # ✅ richtige deutsche Zeit
     now = datetime.now(local_tz).strftime("%H:%M:%S")
+
+    all_players = [p for g in games for p in g["players"]]
+    top_players = sorted(all_players, key=lambda x: x["conf"], reverse=True)[:5]
+    locks = [p for p in all_players if p.get("lock")]
 
     html = f"""
     <html>
@@ -191,6 +213,14 @@ def home():
     body {{ background:#0f172a;color:white;font-family:Arial;margin:0; }}
     .header {{ padding:15px;text-align:center;background:#020617; }}
     .card {{ background:#1e293b;margin:10px;padding:12px;border-radius:12px; }}
+
+    .elite {{ background:#065f46; }}
+    .solid {{ background:#78350f; }}
+    .risky {{ background:#7f1d1d; }}
+
+    .lock-card {{ background:#065f46;margin:10px;padding:12px;border-radius:12px; }}
+    .top-card {{ background:#1d4ed8;margin:10px;padding:12px;border-radius:12px; }}
+
     .live {{ color:#22c55e; }}
     .upcoming {{ color:#facc15; }}
     .final {{ color:#94a3b8; }}
@@ -200,10 +230,23 @@ def home():
     <body>
 
     <div class="header">
-    🔥 MLB LIVE APP<br>
+    🔥 MLB ELITE APP<br>
     <small>Last update: {now}</small>
     </div>
     """
+
+    # LOCK PICKS
+    html += "<h3 style='padding:10px'>🔒 LOCK PICKS</h3>"
+    for p in locks:
+        html += f"<div class='lock-card'>🔒 {p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
+
+    # TOP PICKS
+    html += "<h3 style='padding:10px'>🔥 TOP PICKS</h3>"
+    for p in top_players:
+        html += f"<div class='top-card'>{p['name']} {p['prob']}% ⭐ {p['conf']}</div>"
+
+    # GAMES
+    html += "<h3 style='padding:10px'>⚾ GAMES</h3>"
 
     for g in games:
 
@@ -214,17 +257,12 @@ def home():
         else:
             status_class = "upcoming"
 
-        html += f"""
-        <div class="card">
-        <b>{g['match']}</b><br>
-        <span class="{status_class}">{g['time']} | {g['status']}</span><br>
-
-        ⚾ {g['away_score']} : {g['home_score']}<br>
-        ⏱️ {g['inning']}<br>
-
-        🏠 {g['home_pitcher']}<br>
-        ✈️ {g['away_pitcher']}<br>
-        """
+        html += f"<div class='card'><b>{g['match']}</b><br>"
+        html += f"<span class='{status_class}'>{g['time']} | {g['status']}</span><br>"
+        html += f"⚾ {g['away_score']} : {g['home_score']}<br>"
+        html += f"⏱️ {g['inning']}<br>"
+        html += f"🏠 {g['home_pitcher']}<br>"
+        html += f"✈️ {g['away_pitcher']}<br>"
 
         if not g["has_lineup"]:
             html += "Waiting for lineups..."
@@ -232,7 +270,20 @@ def home():
             html += "No good pick"
         else:
             for p in g["players"]:
-                html += f"{p['lineup']}. {p['name']} → {p['prob']}% ⭐ {p['conf']}<br>"
+
+                if p["conf"] >= 9:
+                    cls = "elite"
+                elif p["conf"] >= 7:
+                    cls = "solid"
+                else:
+                    cls = "risky"
+
+                label = "⚠️" if p.get("fallback") else ""
+                lock = "🔒" if p.get("lock") else ""
+
+                html += f"<div class='{cls}' style='padding:6px;margin-top:6px;border-radius:8px;'>"
+                html += f"{lock} {p['lineup']}. {p['name']}<br>"
+                html += f"{p['prob']}% ⭐ {p['conf']} {label}</div>"
 
         html += "</div>"
 
