@@ -22,7 +22,7 @@ def get_avg(player):
     try:
         return float(avg)
     except:
-        return 0.245  # fallback league avg
+        return 0.245
 
 def simple_model(avg, lineup):
     ab = 4 if lineup <= 5 else 3
@@ -84,8 +84,21 @@ def get_games():
                             "lineup": lineup
                         })
 
-                # 🔥 GARANTIERT PICKS
-                players = sorted(players_raw, key=lambda x: x["conf"], reverse=True)[:3]
+                # 🔥 BEST PICK SYSTEM
+                players_sorted = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
+
+                best = players_sorted[0] if players_sorted else None
+                others = players_sorted[1:3] if len(players_sorted) > 1 else []
+
+                players = []
+
+                if best:
+                    best["best"] = True
+                    players.append(best)
+
+                for p in others:
+                    p["best"] = False
+                    players.append(p)
 
                 games.append({
                     "match": f"{away} vs {home}",
@@ -118,7 +131,6 @@ def home():
         status = data["status"]
 
         now = datetime.now(local_tz).strftime("%H:%M:%S")
-
         refresh_time = "10" if status != "ok" else "30"
 
         html = f"""
@@ -130,17 +142,33 @@ def home():
         body {{ background:#0f172a;color:white;font-family:Arial;margin:0; }}
         .header {{ padding:15px;text-align:center;background:#020617; }}
         .card {{ background:#1e293b;margin:10px;padding:12px;border-radius:12px; }}
+
+        .best {{
+            background:#16a34a;
+            padding:10px;
+            border-radius:10px;
+            margin-top:8px;
+            font-weight:bold;
+        }}
+
+        .alt {{
+            background:#334155;
+            padding:8px;
+            border-radius:8px;
+            margin-top:6px;
+        }}
         </style>
         </head>
+
         <body>
 
         <div class="header">
-        🔥 MLB LIVE APP<br>
+        🔥 MLB LIVE PICKS<br>
         <small>{now}</small>
         </div>
         """
 
-        # 🔥 STATUS UI
+        # STATUS
         if status == "loading":
             html += "<p style='padding:10px;color:yellow'>🔄 Lade Daten...</p>"
         elif status == "error":
@@ -148,7 +176,7 @@ def home():
         else:
             html += "<p style='padding:10px;color:lightgreen'>✅ Live Daten</p>"
 
-        # 🔥 CONTENT
+        # CONTENT
         if not games:
             html += "<p style='padding:10px'>Keine Spiele gefunden</p>"
 
@@ -161,7 +189,22 @@ def home():
                 html += "⚠️ No picks yet"
             else:
                 for p in g["players"]:
-                    html += f"{p['lineup']}. {p['name']} {p['prob']}% ⭐{p['conf']}<br>"
+                    if p.get("best"):
+                        html += f"""
+                        <div class="best">
+                        ⭐ BEST PICK<br>
+                        {p['lineup']}. {p['name']}<br>
+                        {p['prob']}% Trefferchance<br>
+                        🔥 HIGH CONFIDENCE
+                        </div>
+                        """
+                    else:
+                        html += f"""
+                        <div class="alt">
+                        {p['lineup']}. {p['name']}<br>
+                        {p['prob']}%
+                        </div>
+                        """
 
             html += "</div>"
 
