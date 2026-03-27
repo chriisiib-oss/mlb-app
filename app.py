@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import zoneinfo
 import json
 import os
+import time
 
 app = Flask(__name__)
 
@@ -12,11 +13,18 @@ TRACK_FILE = "tracking.json"
 
 API_KEY = "c355d24f246aa8292a71a63932649e16"
 
+# ---------------- CACHE ----------------
+
+ODDS_CACHE = {
+    "data": {},
+    "time": 0
+}
+
 # ---------------- SAFE REQUEST ----------------
 
 def safe_get(url):
     try:
-        return requests.get(url, timeout=5).json()
+        return requests.get(url, timeout=3).json()
     except:
         return {}
 
@@ -68,7 +76,6 @@ def update_results():
     schedule = safe_get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_date}")
 
     for entry in data:
-
         if entry["result"] is not None:
             continue
 
@@ -101,36 +108,55 @@ def update_results():
     with open(TRACK_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# ---------------- PLAYER PROPS ----------------
+# ---------------- ODDS CACHE ----------------
 
-def get_player_props(home, away):
+def get_player_props_cached():
+    global ODDS_CACHE
+
+    now = time.time()
+
+    # 5 Minuten Cache
+    if now - ODDS_CACHE["time"] < 300:
+        return ODDS_CACHE["data"]
+
     try:
         url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={API_KEY}&regions=us&markets=player_hits"
-        data = requests.get(url, timeout=5).json()
+
+        response = requests.get(url, timeout=3)
+
+        if response.status_code != 200:
+            return ODDS_CACHE["data"]
+
+        data = response.json()
+
+        props = {}
 
         for game in data:
-            if game["home_team"] == home and game["away_team"] == away:
+            home = game.get("home_team")
+            away = game.get("away_team")
 
-                props = {}
+            key = f"{away} vs {home}"
+            props[key] = {}
 
-                for bookmaker in game.get("bookmakers", []):
-                    for market in bookmaker.get("markets", []):
-                        if market["key"] != "player_hits":
-                            continue
+            for bookmaker in game.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    if market.get("key") != "player_hits":
+                        continue
 
-                        for outcome in market.get("outcomes", []):
-                            name = outcome.get("description")
-                            price = outcome.get("price")
+                    for outcome in market.get("outcomes", []):
+                        name = outcome.get("description")
+                        price = outcome.get("price")
 
-                            if name and price:
-                                props[name] = price
+                        if name and price:
+                            props[key][name] = price
 
-                return props
+        ODDS_CACHE["data"] = props
+        ODDS_CACHE["time"] = now
+
+        return props
 
     except:
-        return {}
-
-    return {}
+        return ODDS_CACHE["data"]
 
 # ---------------- MODEL ----------------
 
@@ -152,14 +178,15 @@ def confidence(prob, avg, lineup):
     return round(score,1)
 
 def is_value(prob, odds):
-    implied = 1 / odds
-    return prob > implied
+    return prob > (1 / odds)
 
 # ---------------- DATA ----------------
 
 def get_games():
     us_date = get_us_date()
     data = safe_get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_date}")
+
+    all_props = get_player_props_cached()
 
     games = []
     status_flag = "ok"
@@ -173,7 +200,8 @@ def get_games():
                 home = game["teams"]["home"]["team"]["name"]
                 away = game["teams"]["away"]["team"]["name"]
 
-                player_props = get_player_props(home, away)
+                game_key = f"{away} vs {home}"
+                player_props = all_props.get(game_key, {})
 
                 dt = datetime.fromisoformat(game["gameDate"].replace("Z","+00:00"))
                 time_str = dt.astimezone(local_tz).strftime("%H:%M")
@@ -195,12 +223,10 @@ def get_games():
 
                     for p in players:
                         order = p.get("battingOrder")
-
                         if not order:
                             continue
 
                         lineup = int(order) // 100
-
                         if lineup < 1 or lineup > 5:
                             continue
 
@@ -210,7 +236,10 @@ def get_games():
                         prob = simple_model(avg, lineup)
                         conf = confidence(prob, avg, lineup)
 
-                        odds = player_props.get(player_name, 2.0)
+                        odds = player_props.get(player_name)
+                        if not odds:
+                            odds = 2.0
+
                         value = is_value(prob, odds)
 
                         players_raw.append({
@@ -233,7 +262,7 @@ def get_games():
                     best["best"] = True
                     players.append(best)
 
-                    save_pick(f"{away} vs {home}", best["name"], best["prob"])
+                    save_pick(game_key, best["name"], best["prob"])
 
                     for p in others:
                         p["best"] = False
@@ -242,7 +271,7 @@ def get_games():
                     players = []
 
                 games.append({
-                    "match": f"{away} vs {home}",
+                    "match": game_key,
                     "time": time_str,
                     "status": status,
                     "players": players,
@@ -299,7 +328,6 @@ def home():
         </div>
         """
 
-        # STATUS
         if status == "loading":
             html += "<p style='padding:10px;color:yellow'>🔄 Lade Daten...</p>"
         elif status == "error":
