@@ -5,12 +5,13 @@ import zoneinfo
 import json
 import os
 import time
+import unicodedata
+import re
 
 app = Flask(__name__)
 
 local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
 TRACK_FILE = "tracking.json"
-
 API_KEY = "c355d24f246aa8292a71a63932649e16"
 
 # ---------------- CACHE ----------------
@@ -19,6 +20,20 @@ ODDS_CACHE = {
     "data": {},
     "time": 0
 }
+
+# ---------------- NAME FIX ----------------
+
+def normalize_name(name):
+    if not name:
+        return ""
+
+    name = unicodedata.normalize("NFD", name)
+    name = name.encode("ascii", "ignore").decode("utf-8")
+    name = name.lower()
+    name = name.replace(".", "").replace(" jr", "").replace(" sr", "")
+    name = re.sub(r"[^a-z\s]", "", name)
+
+    return name.strip()
 
 # ---------------- SAFE REQUEST ----------------
 
@@ -115,7 +130,6 @@ def get_player_props_cached():
 
     now = time.time()
 
-    # 5 Minuten Cache
     if now - ODDS_CACHE["time"] < 300:
         return ODDS_CACHE["data"]
 
@@ -128,7 +142,6 @@ def get_player_props_cached():
             return ODDS_CACHE["data"]
 
         data = response.json()
-
         props = {}
 
         for game in data:
@@ -148,7 +161,8 @@ def get_player_props_cached():
                         price = outcome.get("price")
 
                         if name and price:
-                            props[key][name] = price
+                            normalized = normalize_name(name)
+                            props[key][normalized] = price
 
         ODDS_CACHE["data"] = props
         ODDS_CACHE["time"] = now
@@ -231,12 +245,21 @@ def get_games():
                             continue
 
                         player_name = p["person"]["fullName"]
+                        normalized_name = normalize_name(player_name)
 
                         avg = get_avg(p)
                         prob = simple_model(avg, lineup)
                         conf = confidence(prob, avg, lineup)
 
-                        odds = player_props.get(player_name)
+                        odds = player_props.get(normalized_name)
+
+                        # 🔥 fallback partial match
+                        if not odds:
+                            for key in player_props:
+                                if normalized_name in key or key in normalized_name:
+                                    odds = player_props[key]
+                                    break
+
                         if not odds:
                             odds = 2.0
 
@@ -393,6 +416,3 @@ def home():
 
     except Exception as e:
         return f"<h1 style='color:red'>ERROR</h1><pre>{str(e)}</pre>"
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
