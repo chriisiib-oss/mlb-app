@@ -253,7 +253,6 @@ def get_games():
 
                         odds = player_props.get(normalized_name)
 
-                        # 🔥 fallback partial match
                         if not odds:
                             for key in player_props:
                                 if normalized_name in key or key in normalized_name:
@@ -358,7 +357,6 @@ def home():
         else:
             html += "<p style='padding:10px;color:lightgreen'>✅ Live Daten</p>"
 
-        # TRACKING
         html += "<h3 style='padding:10px'>📊 Tracking</h3>"
 
         if tracking:
@@ -381,7 +379,6 @@ def home():
         else:
             html += "<p style='padding:10px'>Noch keine Daten</p>"
 
-        # GAMES
         for g in games:
             html += f"<div class='card'><b>{g['match']}</b><br>"
             html += f"{g['time']} | {g['status']}<br>"
@@ -416,3 +413,8 @@ def home():
 
     except Exception as e:
         return f"<h1 style='color:red'>ERROR</h1><pre>{str(e)}</pre>"
+
+# 🔥 WICHTIG: RENDER FIX
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
