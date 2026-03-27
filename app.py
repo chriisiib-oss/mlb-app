@@ -10,15 +10,17 @@ app = Flask(__name__)
 local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
 TRACK_FILE = "tracking.json"
 
+API_KEY = "c355d24f246aa8292a71a63932649e16"
+
 # ---------------- SAFE REQUEST ----------------
 
 def safe_get(url):
     try:
-        return requests.get(url, timeout=3).json()
+        return requests.get(url, timeout=5).json()
     except:
         return {}
 
-# ---------------- DATE FIX ----------------
+# ---------------- DATE ----------------
 
 def get_us_date():
     return (datetime.utcnow() - timedelta(hours=4)).strftime("%Y-%m-%d")
@@ -99,6 +101,37 @@ def update_results():
     with open(TRACK_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+# ---------------- PLAYER PROPS ----------------
+
+def get_player_props(home, away):
+    try:
+        url = f"https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey={API_KEY}&regions=us&markets=player_hits"
+        data = requests.get(url, timeout=5).json()
+
+        for game in data:
+            if game["home_team"] == home and game["away_team"] == away:
+
+                props = {}
+
+                for bookmaker in game.get("bookmakers", []):
+                    for market in bookmaker.get("markets", []):
+                        if market["key"] != "player_hits":
+                            continue
+
+                        for outcome in market.get("outcomes", []):
+                            name = outcome.get("description")
+                            price = outcome.get("price")
+
+                            if name and price:
+                                props[name] = price
+
+                return props
+
+    except:
+        return {}
+
+    return {}
+
 # ---------------- MODEL ----------------
 
 def get_avg(player):
@@ -118,6 +151,10 @@ def confidence(prob, avg, lineup):
     if lineup <= 2: score += 1
     return round(score,1)
 
+def is_value(prob, odds):
+    implied = 1 / odds
+    return prob > implied
+
 # ---------------- DATA ----------------
 
 def get_games():
@@ -135,6 +172,8 @@ def get_games():
 
                 home = game["teams"]["home"]["team"]["name"]
                 away = game["teams"]["away"]["team"]["name"]
+
+                player_props = get_player_props(home, away)
 
                 dt = datetime.fromisoformat(game["gameDate"].replace("Z","+00:00"))
                 time_str = dt.astimezone(local_tz).strftime("%H:%M")
@@ -165,15 +204,22 @@ def get_games():
                         if lineup < 1 or lineup > 5:
                             continue
 
+                        player_name = p["person"]["fullName"]
+
                         avg = get_avg(p)
                         prob = simple_model(avg, lineup)
                         conf = confidence(prob, avg, lineup)
 
+                        odds = player_props.get(player_name, 2.0)
+                        value = is_value(prob, odds)
+
                         players_raw.append({
-                            "name": p["person"]["fullName"],
+                            "name": player_name,
                             "prob": round(prob * 100, 1),
                             "conf": conf,
-                            "lineup": lineup
+                            "lineup": lineup,
+                            "odds": odds,
+                            "value": value
                         })
 
                 if players_raw:
@@ -221,7 +267,7 @@ def get_games():
 @app.route("/")
 def home():
     try:
-        update_results()  # 🔥 AUTO RESULT
+        update_results()
 
         data = get_games()
         games = data["games"]
@@ -248,7 +294,7 @@ def home():
         <body>
 
         <div class="header">
-        🔥 MLB SHARP PICKS<br>
+        🔥 MLB VALUE PICKS<br>
         <small>{now}</small>
         </div>
         """
@@ -294,10 +340,23 @@ def home():
                 html += "⏳ Lineups noch nicht verfügbar"
             else:
                 for p in g["players"]:
+                    value_tag = "💰 VALUE BET" if p.get("value") else ""
+
                     if p.get("best"):
-                        html += f"<div class='best'>⭐ {p['lineup']}. {p['name']} {p['prob']}%</div>"
+                        html += f"""
+                        <div class='best'>
+                        ⭐ {p['lineup']}. {p['name']}<br>
+                        {p['prob']}% | Odds {p['odds']}<br>
+                        {value_tag}
+                        </div>
+                        """
                     else:
-                        html += f"<div class='alt'>{p['lineup']}. {p['name']} {p['prob']}%</div>"
+                        html += f"""
+                        <div class='alt'>
+                        {p['lineup']}. {p['name']}<br>
+                        {p['prob']}% | {p['odds']}
+                        </div>
+                        """
 
             html += "</div>"
 
