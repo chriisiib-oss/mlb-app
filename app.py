@@ -36,16 +36,26 @@ def load_tracking():
 
 def save_pick(game, player, prob):
     data = load_tracking()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # ❌ Duplicate verhindern
+    for entry in data:
+        if entry["game"] == game and entry["player"] == player and entry["date"] == today:
+            return
 
     entry = {
         "game": game,
         "player": player,
         "prob": prob,
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "date": today,
+        "time": datetime.now().strftime("%H:%M"),
         "result": None
     }
 
     data.append(entry)
+
+    # 🔥 Limit (max 100 Einträge)
+    data = data[-100:]
 
     with open(TRACK_FILE, "w") as f:
         json.dump(data, f, indent=2)
@@ -60,13 +70,13 @@ def get_avg(player):
         return 0.245
 
 def simple_model(avg, lineup):
-    ab = 4 if lineup <= 5 else 3
+    ab = 4 if lineup <= 2 else 3.5 if lineup <= 5 else 3
     return max(0.05, min(1 - (1 - avg) ** ab, 0.95))
 
 def confidence(prob, avg, lineup):
     score = prob * 10
     if avg > 0.300: score += 1
-    if lineup <= 3: score += 1
+    if lineup <= 2: score += 1
     return round(score,1)
 
 # ---------------- DATA ----------------
@@ -104,12 +114,23 @@ def get_games():
                 players_raw = []
 
                 for side in ["home", "away"]:
-                    players = list(teams.get(side, {}).get("players", {}).values())[:6]
+                    players = list(teams.get(side, {}).get("players", {}).values())
 
                     for p in players:
-                        lineup = int(p.get("battingOrder", "900")) // 100
-                        avg = get_avg(p)
 
+                        order = p.get("battingOrder")
+
+                        # ❌ kein Lineup → skip
+                        if not order:
+                            continue
+
+                        lineup = int(order) // 100
+
+                        # ❌ nur Top 5
+                        if lineup < 1 or lineup > 5:
+                            continue
+
+                        avg = get_avg(p)
                         prob = simple_model(avg, lineup)
                         conf = confidence(prob, avg, lineup)
 
@@ -120,19 +141,22 @@ def get_games():
                             "lineup": lineup
                         })
 
+                # 🔥 wenn keine Spieler → skip Spiel
+                if not players_raw:
+                    continue
+
                 players_sorted = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
 
-                best = players_sorted[0] if players_sorted else None
-                others = players_sorted[1:3] if len(players_sorted) > 1 else []
+                best = players_sorted[0]
+                others = players_sorted[1:3]
 
                 players = []
 
-                if best:
-                    best["best"] = True
-                    players.append(best)
+                best["best"] = True
+                players.append(best)
 
-                    # 🔥 TRACK
-                    save_pick(f"{away} vs {home}", best["name"], best["prob"])
+                # 🔥 TRACKING (nur einmal)
+                save_pick(f"{away} vs {home}", best["name"], best["prob"])
 
                 for p in others:
                     p["best"] = False
@@ -190,7 +214,7 @@ def home():
         <body>
 
         <div class="header">
-        🔥 MLB LIVE PICKS<br>
+        🔥 MLB SHARP PICKS<br>
         <small>{now}</small>
         </div>
         """
@@ -203,7 +227,7 @@ def home():
         else:
             html += "<p style='padding:10px;color:lightgreen'>✅ Live Daten</p>"
 
-        # 🔥 TRACKING UI
+        # 🔥 TRACKING
         html += "<h3 style='padding:10px'>📊 Tracking</h3>"
 
         if tracking:
@@ -214,7 +238,7 @@ def home():
 
             html += f"<p style='padding:10px'>Hit Rate: {rate}% ({wins}-{losses})</p>"
 
-            for t in tracking[-10:][::-1]:
+            for t in sorted(tracking, key=lambda x: x["date"] + x["time"], reverse=True)[:10]:
                 icon = "🟢" if t.get("result") == "hit" else "🔴" if t.get("result") == "miss" else "⚪"
 
                 html += f"""
@@ -234,9 +258,9 @@ def home():
 
             for p in g["players"]:
                 if p.get("best"):
-                    html += f"<div class='best'>⭐ {p['name']} {p['prob']}%</div>"
+                    html += f"<div class='best'>⭐ {p['lineup']}. {p['name']} {p['prob']}%</div>"
                 else:
-                    html += f"<div class='alt'>{p['name']} {p['prob']}%</div>"
+                    html += f"<div class='alt'>{p['lineup']}. {p['name']} {p['prob']}%</div>"
 
             html += "</div>"
 
