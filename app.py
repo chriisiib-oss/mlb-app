@@ -25,7 +25,18 @@ def get_us_date():
 
 # ---------------- TRACKING ----------------
 
+def load_tracking():
+    if not os.path.exists(TRACK_FILE):
+        return []
+    try:
+        with open(TRACK_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
 def save_pick(game, player, prob):
+    data = load_tracking()
+
     entry = {
         "game": game,
         "player": player,
@@ -33,15 +44,6 @@ def save_pick(game, player, prob):
         "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "result": None
     }
-
-    data = []
-
-    if os.path.exists(TRACK_FILE):
-        try:
-            with open(TRACK_FILE, "r") as f:
-                data = json.load(f)
-        except:
-            data = []
 
     data.append(entry)
 
@@ -118,7 +120,6 @@ def get_games():
                             "lineup": lineup
                         })
 
-                # BEST PICK SYSTEM
                 players_sorted = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
 
                 best = players_sorted[0] if players_sorted else None
@@ -130,7 +131,7 @@ def get_games():
                     best["best"] = True
                     players.append(best)
 
-                    # 🔥 TRACKING
+                    # 🔥 TRACK
                     save_pick(f"{away} vs {home}", best["name"], best["prob"])
 
                 for p in others:
@@ -167,6 +168,8 @@ def home():
         games = data["games"]
         status = data["status"]
 
+        tracking = load_tracking()
+
         now = datetime.now(local_tz).strftime("%H:%M:%S")
         refresh_time = "10" if status != "ok" else "30"
 
@@ -179,21 +182,8 @@ def home():
         body {{ background:#0f172a;color:white;font-family:Arial;margin:0; }}
         .header {{ padding:15px;text-align:center;background:#020617; }}
         .card {{ background:#1e293b;margin:10px;padding:12px;border-radius:12px; }}
-
-        .best {{
-            background:#16a34a;
-            padding:10px;
-            border-radius:10px;
-            margin-top:8px;
-            font-weight:bold;
-        }}
-
-        .alt {{
-            background:#334155;
-            padding:8px;
-            border-radius:8px;
-            margin-top:6px;
-        }}
+        .best {{ background:#16a34a;padding:10px;border-radius:10px;margin-top:8px; }}
+        .alt {{ background:#334155;padding:8px;border-radius:8px;margin-top:6px; }}
         </style>
         </head>
 
@@ -213,30 +203,40 @@ def home():
         else:
             html += "<p style='padding:10px;color:lightgreen'>✅ Live Daten</p>"
 
+        # 🔥 TRACKING UI
+        html += "<h3 style='padding:10px'>📊 Tracking</h3>"
+
+        if tracking:
+            wins = len([t for t in tracking if t.get("result") == "hit"])
+            losses = len([t for t in tracking if t.get("result") == "miss"])
+            total = len(tracking)
+            rate = round((wins / total) * 100, 1) if total > 0 else 0
+
+            html += f"<p style='padding:10px'>Hit Rate: {rate}% ({wins}-{losses})</p>"
+
+            for t in tracking[-10:][::-1]:
+                icon = "🟢" if t.get("result") == "hit" else "🔴" if t.get("result") == "miss" else "⚪"
+
+                html += f"""
+                <div class='card'>
+                {icon} {t['player']} ({t['prob']}%)<br>
+                {t['game']}
+                </div>
+                """
+        else:
+            html += "<p style='padding:10px'>Noch keine Daten</p>"
+
+        # GAMES
         for g in games:
             html += f"<div class='card'><b>{g['match']}</b><br>"
             html += f"{g['time']} | {g['status']}<br>"
             html += f"⚾ {g['away_score']} : {g['home_score']}<br>"
 
-            if not g["players"]:
-                html += "⚠️ No picks yet"
-            else:
-                for p in g["players"]:
-                    if p.get("best"):
-                        html += f"""
-                        <div class="best">
-                        ⭐ BEST PICK<br>
-                        {p['lineup']}. {p['name']}<br>
-                        {p['prob']}% Trefferchance
-                        </div>
-                        """
-                    else:
-                        html += f"""
-                        <div class="alt">
-                        {p['lineup']}. {p['name']}<br>
-                        {p['prob']}%
-                        </div>
-                        """
+            for p in g["players"]:
+                if p.get("best"):
+                    html += f"<div class='best'>⭐ {p['name']} {p['prob']}%</div>"
+                else:
+                    html += f"<div class='alt'>{p['name']} {p['prob']}%</div>"
 
             html += "</div>"
 
