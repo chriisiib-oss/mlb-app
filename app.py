@@ -38,7 +38,6 @@ def save_pick(game, player, prob):
     data = load_tracking()
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # ❌ Duplicate verhindern
     for entry in data:
         if entry["game"] == game and entry["player"] == player and entry["date"] == today:
             return
@@ -53,8 +52,6 @@ def save_pick(game, player, prob):
     }
 
     data.append(entry)
-
-    # 🔥 Limit (max 100 Einträge)
     data = data[-100:]
 
     with open(TRACK_FILE, "w") as f:
@@ -117,10 +114,9 @@ def get_games():
                     players = list(teams.get(side, {}).get("players", {}).values())
 
                     for p in players:
-
                         order = p.get("battingOrder")
 
-                        # ❌ kein Lineup → skip
+                        # ❌ kein offizielles Lineup
                         if not order:
                             continue
 
@@ -141,26 +137,26 @@ def get_games():
                             "lineup": lineup
                         })
 
-                # 🔥 wenn keine Spieler → skip Spiel
-                if not players_raw:
-                    continue
+                # 🔥 BEST PICK LOGIK (mit Fallback)
+                if players_raw:
+                    players_sorted = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
 
-                players_sorted = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
+                    best = players_sorted[0]
+                    others = players_sorted[1:3]
 
-                best = players_sorted[0]
-                others = players_sorted[1:3]
+                    players = []
 
-                players = []
+                    best["best"] = True
+                    players.append(best)
 
-                best["best"] = True
-                players.append(best)
+                    save_pick(f"{away} vs {home}", best["name"], best["prob"])
 
-                # 🔥 TRACKING (nur einmal)
-                save_pick(f"{away} vs {home}", best["name"], best["prob"])
+                    for p in others:
+                        p["best"] = False
+                        players.append(p)
 
-                for p in others:
-                    p["best"] = False
-                    players.append(p)
+                else:
+                    players = []  # kein Lineup → keine Picks
 
                 games.append({
                     "match": f"{away} vs {home}",
@@ -227,7 +223,7 @@ def home():
         else:
             html += "<p style='padding:10px;color:lightgreen'>✅ Live Daten</p>"
 
-        # 🔥 TRACKING
+        # TRACKING
         html += "<h3 style='padding:10px'>📊 Tracking</h3>"
 
         if tracking:
@@ -256,11 +252,14 @@ def home():
             html += f"{g['time']} | {g['status']}<br>"
             html += f"⚾ {g['away_score']} : {g['home_score']}<br>"
 
-            for p in g["players"]:
-                if p.get("best"):
-                    html += f"<div class='best'>⭐ {p['lineup']}. {p['name']} {p['prob']}%</div>"
-                else:
-                    html += f"<div class='alt'>{p['lineup']}. {p['name']} {p['prob']}%</div>"
+            if not g["players"]:
+                html += "⏳ Lineups noch nicht verfügbar"
+            else:
+                for p in g["players"]:
+                    if p.get("best"):
+                        html += f"<div class='best'>⭐ {p['lineup']}. {p['name']} {p['prob']}%</div>"
+                    else:
+                        html += f"<div class='alt'>{p['lineup']}. {p['name']} {p['prob']}%</div>"
 
             html += "</div>"
 
