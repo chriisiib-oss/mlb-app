@@ -57,6 +57,48 @@ def save_pick(game, player, prob):
     with open(TRACK_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+# ---------------- AUTO RESULT ----------------
+
+def update_results():
+    data = load_tracking()
+    us_date = get_us_date()
+
+    schedule = safe_get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_date}")
+
+    for entry in data:
+
+        if entry["result"] is not None:
+            continue
+
+        for date in schedule.get("dates", []):
+            for game in date.get("games", []):
+
+                home = game["teams"]["home"]["team"]["name"]
+                away = game["teams"]["away"]["team"]["name"]
+                match = f"{away} vs {home}"
+
+                if match != entry["game"]:
+                    continue
+
+                if "Final" not in game["status"]["detailedState"]:
+                    continue
+
+                game_id = game["gamePk"]
+
+                live = safe_get(f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live")
+                teams = live.get("liveData", {}).get("boxscore", {}).get("teams", {})
+
+                for side in ["home", "away"]:
+                    for p in teams.get(side, {}).get("players", {}).values():
+
+                        if p["person"]["fullName"] == entry["player"]:
+                            hits = p.get("stats", {}).get("batting", {}).get("hits", 0)
+                            entry["result"] = "hit" if hits >= 1 else "miss"
+                            break
+
+    with open(TRACK_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
 # ---------------- MODEL ----------------
 
 def get_avg(player):
@@ -80,8 +122,7 @@ def confidence(prob, avg, lineup):
 
 def get_games():
     us_date = get_us_date()
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_date}"
-    data = safe_get(url)
+    data = safe_get(f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_date}")
 
     games = []
     status_flag = "ok"
@@ -116,13 +157,11 @@ def get_games():
                     for p in players:
                         order = p.get("battingOrder")
 
-                        # ❌ kein offizielles Lineup
                         if not order:
                             continue
 
                         lineup = int(order) // 100
 
-                        # ❌ nur Top 5
                         if lineup < 1 or lineup > 5:
                             continue
 
@@ -137,7 +176,6 @@ def get_games():
                             "lineup": lineup
                         })
 
-                # 🔥 BEST PICK LOGIK (mit Fallback)
                 if players_raw:
                     players_sorted = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
 
@@ -154,9 +192,8 @@ def get_games():
                     for p in others:
                         p["best"] = False
                         players.append(p)
-
                 else:
-                    players = []  # kein Lineup → keine Picks
+                    players = []
 
                 games.append({
                     "match": f"{away} vs {home}",
@@ -184,10 +221,11 @@ def get_games():
 @app.route("/")
 def home():
     try:
+        update_results()  # 🔥 AUTO RESULT
+
         data = get_games()
         games = data["games"]
         status = data["status"]
-
         tracking = load_tracking()
 
         now = datetime.now(local_tz).strftime("%H:%M:%S")
