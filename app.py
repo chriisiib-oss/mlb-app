@@ -1,11 +1,14 @@
 from flask import Flask
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import zoneinfo
+import json
+import os
 
 app = Flask(__name__)
 
 local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
+TRACK_FILE = "tracking.json"
 
 # ---------------- SAFE REQUEST ----------------
 
@@ -14,6 +17,36 @@ def safe_get(url):
         return requests.get(url, timeout=3).json()
     except:
         return {}
+
+# ---------------- DATE FIX ----------------
+
+def get_us_date():
+    return (datetime.utcnow() - timedelta(hours=4)).strftime("%Y-%m-%d")
+
+# ---------------- TRACKING ----------------
+
+def save_pick(game, player, prob):
+    entry = {
+        "game": game,
+        "player": player,
+        "prob": prob,
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "result": None
+    }
+
+    data = []
+
+    if os.path.exists(TRACK_FILE):
+        try:
+            with open(TRACK_FILE, "r") as f:
+                data = json.load(f)
+        except:
+            data = []
+
+    data.append(entry)
+
+    with open(TRACK_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 # ---------------- MODEL ----------------
 
@@ -37,7 +70,8 @@ def confidence(prob, avg, lineup):
 # ---------------- DATA ----------------
 
 def get_games():
-    url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1"
+    us_date = get_us_date()
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={us_date}"
     data = safe_get(url)
 
     games = []
@@ -84,7 +118,7 @@ def get_games():
                             "lineup": lineup
                         })
 
-                # 🔥 BEST PICK SYSTEM
+                # BEST PICK SYSTEM
                 players_sorted = sorted(players_raw, key=lambda x: x["conf"], reverse=True)
 
                 best = players_sorted[0] if players_sorted else None
@@ -95,6 +129,9 @@ def get_games():
                 if best:
                     best["best"] = True
                     players.append(best)
+
+                    # 🔥 TRACKING
+                    save_pick(f"{away} vs {home}", best["name"], best["prob"])
 
                 for p in others:
                     p["best"] = False
@@ -176,10 +213,6 @@ def home():
         else:
             html += "<p style='padding:10px;color:lightgreen'>✅ Live Daten</p>"
 
-        # CONTENT
-        if not games:
-            html += "<p style='padding:10px'>Keine Spiele gefunden</p>"
-
         for g in games:
             html += f"<div class='card'><b>{g['match']}</b><br>"
             html += f"{g['time']} | {g['status']}<br>"
@@ -194,8 +227,7 @@ def home():
                         <div class="best">
                         ⭐ BEST PICK<br>
                         {p['lineup']}. {p['name']}<br>
-                        {p['prob']}% Trefferchance<br>
-                        🔥 HIGH CONFIDENCE
+                        {p['prob']}% Trefferchance
                         </div>
                         """
                     else:
