@@ -1,93 +1,35 @@
 from flask import Flask
 import requests
-from datetime import datetime, timedelta
-import zoneinfo
-import json
+from datetime import datetime
 import os
-import time
-import unicodedata
-import re
 
 app = Flask(__name__)
 
-# ---------------- CONFIG ----------------
+API_KEY = "c355d24f246aa8292a71a63932649e16"
 
-local_tz = zoneinfo.ZoneInfo("Europe/Berlin")
-TRACK_FILE = "tracking.json"
-API_KEY = "DEIN_API_KEY"
-SPORT = os.environ.get("SPORT", "mlb")
-
-# ---------------- CACHE ----------------
-
-ODDS_CACHE = {"data": {}, "time": 0}
-
-# ---------------- NAME FIX ----------------
-
-def normalize_name(name):
-    if not name:
-        return ""
-    name = unicodedata.normalize("NFD", name)
-    name = name.encode("ascii", "ignore").decode("utf-8")
-    name = name.lower().replace(".", "").replace(" jr", "").replace(" sr", "")
-    name = re.sub(r"[^a-z\s]", "", name)
-    return name.strip()
-
-# ---------------- SAFE ----------------
+# ---------------- SAFE REQUEST ----------------
 
 def safe_get(url):
     try:
-        return requests.get(url, timeout=3).json()
+        r = requests.get(url, timeout=3)
+        if r.status_code == 200:
+            return r.json()
     except:
-        return {}
+        pass
+    return {}
 
-def get_us_date():
-    return (datetime.utcnow() - timedelta(hours=4)).strftime("%Y-%m-%d")
+# ---------------- EDGE ----------------
 
-# ---------------- TRACKING ----------------
-
-def load_tracking():
-    if not os.path.exists(TRACK_FILE):
-        return []
+def calc_edge(prob, odds):
     try:
-        with open(TRACK_FILE, "r") as f:
-            return json.load(f)
+        return round((prob - (1 / odds)) * 100, 2)
     except:
-        return []
+        return 0
 
-def save_pick(game, player, prob):
-    data = load_tracking()
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    for entry in data:
-        if entry["game"] == game and entry["player"] == player and entry["date"] == today:
-            return
-
-    data.append({
-        "game": game,
-        "player": player,
-        "prob": prob,
-        "date": today,
-        "time": datetime.now().strftime("%H:%M"),
-        "result": None
-    })
-
-    with open(TRACK_FILE, "w") as f:
-        json.dump(data[-100:], f, indent=2)
-
-# ---------------- MLB ----------------
-
-def get_mlb_games():
-    # (gekürzt – dein bestehender MLB Code bleibt unverändert)
-    return {"games": [], "status": "ok"}
-
-# ---------------- SOCCER MODEL ----------------
+# ---------------- SOCCER ----------------
 
 def get_soccer_games():
-    try:
-        url = f"https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey={API_KEY}&regions=eu&markets=totals"
-        data = requests.get(url, timeout=3).json()
-    except:
-        return {"games": [], "status": "error"}
+    data = safe_get(f"https://api.the-odds-api.com/v4/sports/soccer_epl/odds/?apiKey={API_KEY}&regions=eu&markets=totals")
 
     games = []
 
@@ -111,6 +53,7 @@ def get_soccer_games():
         if not over_odds or not under_odds:
             continue
 
+        # Simple Model
         prob_over = 0.55 if over_odds > 1.8 else 0.48
         prob_under = 1 - prob_over
 
@@ -121,8 +64,7 @@ def get_soccer_games():
                 "name": "Over 2.5 Goals",
                 "prob": round(prob_over * 100, 1),
                 "odds": over_odds,
-                "value": True,
-                "best": True
+                "value": True
             })
 
         if prob_under > (1 / under_odds):
@@ -130,27 +72,20 @@ def get_soccer_games():
                 "name": "Under 2.5 Goals",
                 "prob": round(prob_under * 100, 1),
                 "odds": under_odds,
-                "value": True,
-                "best": not players
+                "value": True
             })
 
         games.append({
             "match": f"{away} vs {home}",
-            "time": "Today",
-            "status": "Soccer",
             "players": players
         })
 
-    return {"games": games, "status": "ok"}
+    return games
 
-# ---------------- TENNIS MODEL ----------------
+# ---------------- TENNIS ----------------
 
 def get_tennis_games():
-    try:
-        url = f"https://api.the-odds-api.com/v4/sports/tennis_atp/odds/?apiKey={API_KEY}&regions=eu&markets=h2h"
-        data = requests.get(url, timeout=3).json()
-    except:
-        return {"games": [], "status": "error"}
+    data = safe_get(f"https://api.the-odds-api.com/v4/sports/tennis_atp/odds/?apiKey={API_KEY}&regions=eu&markets=h2h")
 
     games = []
 
@@ -184,8 +119,7 @@ def get_tennis_games():
                 "name": p1,
                 "prob": round(prob1 * 100, 1),
                 "odds": odds1,
-                "value": True,
-                "best": True
+                "value": True
             })
 
         if prob2 > (1 / odds2):
@@ -193,53 +127,80 @@ def get_tennis_games():
                 "name": p2,
                 "prob": round(prob2 * 100, 1),
                 "odds": odds2,
-                "value": True,
-                "best": not players_out
+                "value": True
             })
 
         games.append({
             "match": f"{p1} vs {p2}",
-            "time": "Today",
-            "status": "Tennis",
             "players": players_out
         })
 
-    return {"games": games, "status": "ok"}
+    return games
 
-# ---------------- ROUTER ----------------
+# ---------------- SHARP MODE ----------------
 
-def get_games():
-    if SPORT == "mlb":
-        return get_mlb_games()
-    elif SPORT == "soccer":
-        return get_soccer_games()
-    elif SPORT == "tennis":
-        return get_tennis_games()
-    return {"games": [], "status": "error"}
+def get_all_picks():
+    all_picks = []
+
+    # Soccer
+    try:
+        for g in get_soccer_games():
+            for p in g["players"]:
+                edge = calc_edge(p["prob"]/100, p["odds"])
+                all_picks.append({
+                    "sport": "⚽",
+                    "match": g["match"],
+                    "name": p["name"],
+                    "prob": p["prob"],
+                    "odds": p["odds"],
+                    "edge": edge
+                })
+    except:
+        pass
+
+    # Tennis
+    try:
+        for g in get_tennis_games():
+            for p in g["players"]:
+                edge = calc_edge(p["prob"]/100, p["odds"])
+                all_picks.append({
+                    "sport": "🎾",
+                    "match": g["match"],
+                    "name": p["name"],
+                    "prob": p["prob"],
+                    "odds": p["odds"],
+                    "edge": edge
+                })
+    except:
+        pass
+
+    return sorted(all_picks, key=lambda x: x["edge"], reverse=True)
 
 # ---------------- WEB ----------------
 
 @app.route("/")
 def home():
-    data = get_games()
-    games = data["games"]
+    picks = get_all_picks()
 
-    html = f"""
-    <html><body style='background:#0f172a;color:white;font-family:Arial'>
-    <h2>🔥 {SPORT.upper()} MODE</h2>
+    html = """
+    <html>
+    <body style='background:#0f172a;color:white;font-family:Arial'>
+    <h1 style='text-align:center'>🔥 SHARP MODE</h1>
     """
 
-    for g in games:
-        html += f"<div><b>{g['match']}</b><br>"
+    if not picks:
+        html += "<p style='padding:20px'>⏳ Keine Value Bets aktuell</p>"
 
-        if not g["players"]:
-            html += "No Value"
-        else:
-            for p in g["players"]:
-                tag = "💰 VALUE" if p.get("value") else ""
-                html += f"{p['name']} {p['prob']}% @ {p['odds']} {tag}<br>"
-
-        html += "</div><hr>"
+    for p in picks[:10]:
+        html += f"""
+        <div style='background:#1e293b;margin:10px;padding:10px;border-radius:10px'>
+        {p['sport']}<br>
+        {p['match']}<br>
+        ⭐ {p['name']}<br>
+        {p['prob']}% | {p['odds']}<br>
+        🔥 Edge: {p['edge']}%
+        </div>
+        """
 
     html += "</body></html>"
     return html
